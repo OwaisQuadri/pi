@@ -689,6 +689,8 @@ Supported formats: PNG, JPEG, GIF, WebP. Dimensions are parsed from the image he
 
 ## Autocomplete
 
+Custom `AutocompleteProvider` implementations can set `triggerCharacters` to enable automatic suggestions at token boundaries, in addition to the default `@` and `#` triggers. Register `triggerCharacters: ["/"]` explicitly to enable inline slash suggestions, such as `use /skill`. Leading slash commands work without this registration. Slashes inside paths or URLs do not start a new trigger token.
+
 ### CombinedAutocompleteProvider
 
 Supports both slash commands and file paths.
