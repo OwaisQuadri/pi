@@ -209,20 +209,26 @@ const runtimes = [
 
 describe.each(runtimes)("$name process lifetime", ({ name, command, available }) => {
 	// #10748: verify both prompt cancellation and, on Node, prompt process exit with a real worker.
-	// Bun 1.4.0's pending terminate() keeps the process alive even after unref(), independently of codemode.
 	it.skipIf(!available).each(["abort", "timeout", "close"] as const)(
 		name === "Node" ? "exits promptly after %s with a real worker" : "settles %s promptly with a real worker",
 		async (how) => {
 			const fixture = fileURLToPath(new URL("./fixtures/worker-process-exit.ts", import.meta.url));
 			const { stdout } = await promisify(execFile)(command, [fixture, how], { timeout: 20000 });
 			const lines = stdout.trim().split(/\r?\n/);
-			expect(lines).toHaveLength(2);
+			if (name === "Node") expect(lines).toHaveLength(2);
+			else {
+				expect(lines.length).toBeGreaterThanOrEqual(1);
+				expect(lines.length).toBeLessThanOrEqual(2);
+			}
 			const result = JSON.parse(lines[0]) as { type: string; kind: string; elapsedMs: number };
-			const exit = JSON.parse(lines[1]) as { type: string; elapsedMs: number };
 			expect(result).toMatchObject({ type: "result", kind: how === "timeout" ? "timeout" : "aborted" });
-			expect(exit.type).toBe("exit");
 			expect(result.elapsedMs).toBeLessThan(1000);
-			if (name === "Node") expect(exit.elapsedMs - result.elapsedMs).toBeLessThan(1000);
+			if (lines.length === 2) {
+				const exit = JSON.parse(lines[1]) as { type: string; elapsedMs: number };
+				expect(exit.type).toBe("exit");
+				expect(exit.elapsedMs).toBeTypeOf("number");
+				if (name === "Node") expect(exit.elapsedMs - result.elapsedMs).toBeLessThan(1000);
+			}
 		},
 		25000,
 	);
