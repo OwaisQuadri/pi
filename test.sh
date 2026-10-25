@@ -63,6 +63,10 @@ test_env=(
 	"AWS_EC2_METADATA_DISABLED=true"
 )
 
+if [[ -n "${PI_COMPILED_ROOT:-}" ]]; then
+	test_env+=("PI_COMPILED_ROOT=$PI_COMPILED_ROOT")
+fi
+
 # Native Windows needs these inherited values to launch child processes.
 for name in SystemRoot SYSTEMROOT WINDIR COMSPEC PATHEXT; do
 	value="${!name-}"
