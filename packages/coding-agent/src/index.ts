@@ -238,6 +238,7 @@ export {
 	type CredentialSynchronizationOperation,
 	ModelRuntime,
 	type ModelRuntimeAuthOverrides,
+	type SubscriptionSimpleStreamOptions,
 } from "./core/model-runtime.ts";
 export type {
 	PackageInstallFailure,
