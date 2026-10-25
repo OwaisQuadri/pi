@@ -24,6 +24,16 @@ When several credential sources are configured, Pi uses a runtime `--api-key` fi
 
 Keep `auth.json` and any credential commands private. Project settings and extensions can execute inside the Pi process after you trust a project. Review [Security](security.md) before loading configuration from an untrusted directory.
 
+## Subscription-only extension requests
+
+Extensions that must not use API-key or ambient authentication can call `ctx.modelRegistry.streamSubscriptionSimple(model, context, options)`. Check that the method exists before calling it on an older runtime; do not pass a subscription flag to `streamSimple`.
+
+The method resolves stored subscription OAuth for the exact physical request, including after virtual-model routing. It rejects runtime keys, explicit authentication, request headers, payload hooks, custom fetch, transport overrides, configured or extension-replaced providers, changed endpoints or compatibility settings, and Anthropic server-side fallbacks. Only the unchanged built-in OpenAI Responses, OpenAI Codex, and Anthropic Messages subscription routes are supported. A rejection returns a stream error without dispatch; it never selects another model or falls back to an API key.
+
+`SubscriptionSimpleStreamOptions` retains reasoning, thinking budgets, tool choice, token and temperature limits, cache/session settings, cancellation, telemetry, timeout, and retry settings. Its optional synchronous `onDispatch` observer receives only frozen `{ provider, modelID, api }` metadata after authentication and transport checks, immediately before physical dispatch. Throw to reject a physical destination; its return value is ignored. It cannot rewrite headers or the payload.
+
+The runtime retains an identity/transport snapshot of the bundled chat models for its lifetime, taking O(n) storage for n models. Remote-only models and transport metadata changes are conservatively rejected. OAuth metadata and token shape alone are not billing evidence: these checks enforce the local credential branch and known adapter route, not provider-side account entitlements, spending limits, quotas, or subscription policy. Normal `streamSimple` behavior is unchanged.
+
 ## Select a model
 
 Run `/model` to search available models. The picker shows models whose providers have usable authentication. Press `Ctrl+S` on a model to save it as the default for new sessions.
