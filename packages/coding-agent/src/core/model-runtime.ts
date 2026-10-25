@@ -195,11 +195,14 @@ export class ModelRuntime implements Models {
 	private readonly models: MutableModels;
 	private readonly credentials: RuntimeCredentials;
 	private readonly defaultBuiltins: ReadonlyMap<string, Provider>;
-	private readonly builtinRequestModels: readonly {
-		model: Pick<Model<Api>, "provider" | "id" | "api" | "baseUrl" | "compat" | "reasoning" | "thinkingLevelMap">;
-		transport: Pick<Provider, "streamSimple" | "baseUrl" | "headers">;
-		oauth: Pick<NonNullable<Provider["auth"]["oauth"]>, "toAuth" | "refresh" | "isSubscription"> | undefined;
-	}[];
+	private readonly subscriptionProviders = new Map<
+		string,
+		{
+			models: ReadonlyMap<string, Pick<Model<Api>, "api" | "baseUrl" | "compat" | "reasoning" | "thinkingLevelMap">>;
+			transport: Pick<Provider, "streamSimple" | "baseUrl" | "headers">;
+			oauth: Pick<NonNullable<Provider["auth"]["oauth"]>, "toAuth" | "refresh" | "isSubscription"> | undefined;
+		}
+	>();
 	private readonly builtins = new Map<string, Provider>();
 	private readonly nativeExtensionProviders = new Map<string, Provider>();
 	private readonly extensionProviders = new Map<string, ProviderConfigInput>();
@@ -235,23 +238,35 @@ export class ModelRuntime implements Models {
 		this.modelsPath = modelsPath;
 		this.modelNetworkEnabled = modelNetworkEnabled;
 		this.defaultBuiltins = new Map(providers.map((provider) => [provider.id, provider]));
-		this.builtinRequestModels = providers.flatMap((provider) =>
-			provider
-				.getModels()
-				.map(({ provider: providerId, id, api, baseUrl, compat, reasoning, thinkingLevelMap }) => ({
-					model: structuredClone({ provider: providerId, id, api, baseUrl, compat, reasoning, thinkingLevelMap }),
-					transport: {
-						streamSimple: provider.streamSimple,
-						baseUrl: provider.baseUrl,
-						headers: provider.headers && { ...provider.headers },
-					},
-					oauth: provider.auth.oauth && {
-						toAuth: provider.auth.oauth.toAuth,
-						refresh: provider.auth.oauth.refresh,
-						isSubscription: provider.auth.oauth.isSubscription,
-					},
-				})),
-		);
+		for (const [providerId, api] of [
+			["openai", "openai-responses"],
+			["anthropic", "anthropic-messages"],
+			["openai-codex", "openai-codex-responses"],
+		] as const) {
+			const provider = this.defaultBuiltins.get(providerId);
+			if (!provider) continue;
+			this.subscriptionProviders.set(provider.id, {
+				models: new Map(
+					provider
+						.getModels()
+						.filter((model) => model.api === api)
+						.map(({ id, api, baseUrl, compat, reasoning, thinkingLevelMap }) => [
+							id,
+							structuredClone({ api, baseUrl, compat, reasoning, thinkingLevelMap }),
+						]),
+				),
+				transport: {
+					streamSimple: provider.streamSimple,
+					baseUrl: provider.baseUrl,
+					headers: provider.headers && { ...provider.headers },
+				},
+				oauth: provider.auth.oauth && {
+					toAuth: provider.auth.oauth.toAuth,
+					refresh: provider.auth.oauth.refresh,
+					isSubscription: provider.auth.oauth.isSubscription,
+				},
+			});
+		}
 		for (const [providerId, provider] of this.defaultBuiltins) this.builtins.set(providerId, provider);
 		this.models = createModels({ credentials, modelsStore });
 		this.rebuildProviders();
@@ -830,42 +845,37 @@ export class ModelRuntime implements Models {
 
 	private assertSubscriptionTransport(model: AnyModel): void {
 		const builtin = this.defaultBuiltins.get(model.provider);
-		const canonical = this.builtinRequestModels.find(
-			(entry) => entry.model.provider === model.provider && entry.model.id === model.id,
-		);
+		const canonicalProvider = this.subscriptionProviders.get(model.provider);
+		const canonical = canonicalProvider?.models.get(model.id);
 		if (this.credentials.hasRuntimeApiKey(model.provider)) {
 			throw new ModelsError("auth", `Stored subscription OAuth is required for ${model.provider}`);
 		}
-		const isSupportedAdapter =
-			(model.provider === "openai" && model.api === "openai-responses") ||
-			(model.provider === "anthropic" && model.api === "anthropic-messages") ||
-			(model.provider === "openai-codex" && model.api === "openai-codex-responses");
 		if (
-			!isSupportedAdapter ||
 			!builtin ||
+			!canonicalProvider ||
 			this.builtins.get(model.provider) !== builtin ||
 			this.nativeExtensionProviders.has(model.provider) ||
 			this.extensionProviders.has(model.provider) ||
 			this.config.getProvider(model.provider) ||
 			!canonical ||
-			builtin.streamSimple !== canonical.transport.streamSimple ||
-			builtin.baseUrl !== canonical.transport.baseUrl ||
-			!isDeepStrictEqual(builtin.headers, canonical.transport.headers) ||
-			canonical.oauth?.isSubscription !== true ||
-			builtin.auth.oauth?.toAuth !== canonical.oauth?.toAuth ||
-			builtin.auth.oauth?.refresh !== canonical.oauth?.refresh ||
+			builtin.streamSimple !== canonicalProvider.transport.streamSimple ||
+			builtin.baseUrl !== canonicalProvider.transport.baseUrl ||
+			!isDeepStrictEqual(builtin.headers, canonicalProvider.transport.headers) ||
+			canonicalProvider.oauth?.isSubscription !== true ||
+			builtin.auth.oauth?.toAuth !== canonicalProvider.oauth?.toAuth ||
+			builtin.auth.oauth?.refresh !== canonicalProvider.oauth?.refresh ||
 			!builtin.auth.oauth?.isSubscription ||
 			this.models.getProvider(model.provider)?.auth !== builtin.auth ||
-			model.api !== canonical.model.api ||
-			model.baseUrl !== canonical.model.baseUrl ||
-			model.baseUrl !== canonical.transport.baseUrl ||
+			model.api !== canonical.api ||
+			model.baseUrl !== canonical.baseUrl ||
+			model.baseUrl !== canonicalProvider.transport.baseUrl ||
 			model.headers !== undefined ||
 			!("reasoning" in model) ||
-			model.reasoning !== canonical.model.reasoning ||
-			!isDeepStrictEqual(model.thinkingLevelMap, canonical.model.thinkingLevelMap) ||
+			model.reasoning !== canonical.reasoning ||
+			!isDeepStrictEqual(model.thinkingLevelMap, canonical.thinkingLevelMap) ||
 			model.samplingParams !== undefined ||
 			model.samplingParamsByThinkingLevel !== undefined ||
-			!isDeepStrictEqual(model.compat, canonical.model.compat) ||
+			!isDeepStrictEqual(model.compat, canonical.compat) ||
 			(model.compat &&
 				"allowedFallbackModels" in model.compat &&
 				Array.isArray(model.compat.allowedFallbackModels) &&
