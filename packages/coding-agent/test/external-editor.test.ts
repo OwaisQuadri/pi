@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,8 +21,10 @@ async function runExternalEditor(fixtureFlag?: "--fail" | "--empty"): Promise<{
 	const testDirectory = mkdtempSync(join(tmpdir(), "pi-external-editor-test-"));
 	const capturePath = join(testDirectory, "capture.json");
 	try {
+		const fixturePath = join(testDirectory, basename(editorFixturePath));
+		copyFileSync(editorFixturePath, fixturePath);
 		const result = await editInExternalEditor({
-			command: `${process.execPath} ${editorFixturePath} ${capturePath}${fixtureFlag ? ` ${fixtureFlag}` : ""}`,
+			command: `${process.execPath} ${fixturePath} ${capturePath}${fixtureFlag ? ` ${fixtureFlag}` : ""}`,
 			content: "original",
 		});
 		const capture = JSON.parse(readFileSync(capturePath, "utf-8")) as EditorCapture;
