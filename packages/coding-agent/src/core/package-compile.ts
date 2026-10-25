@@ -72,7 +72,7 @@ export async function withPackageLock<T>(
 	const args =
 		process.platform === "darwin"
 			? isNonBlocking
-				? ["-k", "-s", "-n"]
+				? ["-k", "-s", "-t", "0"]
 				: ["-k", "-s", "-t", "60"]
 			: isNonBlocking
 				? ["-n", "-E", "75"]
