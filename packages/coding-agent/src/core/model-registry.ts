@@ -25,7 +25,7 @@ import type {
 	Provider,
 	ProviderHeaders,
 } from "@earendil-works/pi-ai";
-import type { ModelRuntime } from "./model-runtime.ts";
+import type { ModelRuntime, SubscriptionSimpleStreamOptions } from "./model-runtime.ts";
 import type { AuthStatus, ProviderConfigInput } from "./provider-composer.ts";
 import type { VirtualModelDefinition } from "./virtual-models.ts";
 
@@ -137,6 +137,14 @@ export class ModelRegistry {
 	/** Stream with provider-neutral options and request-time authentication. */
 	streamSimple(model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions): AssistantMessageEventStream {
 		return this.runtime.streamSimple(model, context, options);
+	}
+
+	streamSubscriptionSimple(
+		model: Model<Api>,
+		context: Context,
+		options?: SubscriptionSimpleStreamOptions,
+	): AssistantMessageEventStream {
+		return this.runtime.streamSubscriptionSimple(model, context, options);
 	}
 
 	complete<TApi extends Api>(
