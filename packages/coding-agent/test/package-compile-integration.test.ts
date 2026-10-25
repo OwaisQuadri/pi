@@ -25,6 +25,7 @@ import {
 import { DefaultPackageManager } from "../src/core/package-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import * as gitSource from "../src/utils/git.ts";
+import { allowNetwork } from "./test-network-env.ts";
 
 async function waitUntil(predicate: () => boolean | Promise<boolean>): Promise<void> {
 	const deadline = Date.now() + 10_000;
@@ -56,6 +57,7 @@ describe.skipIf(process.platform === "win32")("managed package compiler integrat
 	const compilerRoot = process.env.PI_COMPILED_ROOT;
 
 	beforeEach(() => {
+		allowNetwork();
 		expect(compilerRoot, "Set PI_COMPILED_ROOT to the reviewed pi-compiled checkout").toBeTruthy();
 		root = mkdtempSync(join(tmpdir(), "pi-lifecycle-integration-"));
 		target = join(root, "agent/git/github.com/fixture/package");
