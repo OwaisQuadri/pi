@@ -1,7 +1,21 @@
-import { type AuthType, type CredentialStore, InMemoryCredentialStore } from "@earendil-works/pi-ai";
-import { describe, expect, it } from "vitest";
+import {
+	type Api,
+	type AuthType,
+	type CredentialStore,
+	createAssistantMessageEventStream,
+	fauxAssistantMessage,
+	InMemoryCredentialStore,
+	type Model,
+	type ModelsSimpleStreamOptions,
+	type OAuthCredential,
+	type Provider,
+	type SimpleStreamOptions,
+} from "@earendil-works/pi-ai";
+import * as builtinProviderCatalog from "@earendil-works/pi-ai/providers/all";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
-import { ModelRuntime } from "../src/core/model-runtime.ts";
+import { ModelRegistry } from "../src/core/model-registry.ts";
+import { ModelRuntime, type SubscriptionSimpleStreamOptions } from "../src/core/model-runtime.ts";
 
 function authOptions(runtime: ModelRuntime, type?: AuthType) {
 	return runtime
@@ -31,6 +45,335 @@ function testModel(id: string) {
 		maxTokens: 1000,
 	};
 }
+
+describe("ModelRuntime subscription requests", () => {
+	afterEach(() => vi.restoreAllMocks());
+
+	async function setupSubscription(compat?: Model<Api>["compat"]) {
+		const credentials = new InMemoryCredentialStore();
+		const calls: { model: Model<Api>; options?: SimpleStreamOptions }[] = [];
+		const ambient = vi.fn(async () => ({ auth: { apiKey: "ambient-key" } }));
+		const toAuth = vi.fn(async (credential: OAuthCredential) => ({ apiKey: credential.access }));
+		const refresh = vi.fn(async (credential: OAuthCredential) => ({
+			...credential,
+			expires: Date.now() + 60 * 60_000,
+		}));
+		const providers: Provider[] = ["openai", "anthropic"].map((id) => {
+			const model: Model<Api> = {
+				...testModel("subscription-model"),
+				reasoning: true,
+				provider: id,
+				api: id === "openai" ? "openai-responses" : "anthropic-messages",
+				baseUrl: id === "openai" ? "https://api.openai.com/v1" : "https://api.anthropic.com",
+				compat,
+			};
+			return {
+				id,
+				name: id,
+				baseUrl: model.baseUrl,
+				auth: {
+					apiKey: { name: "Synthetic key", resolve: ambient },
+					oauth: {
+						name: "Synthetic subscription",
+						isSubscription: true,
+						login: async () => {
+							throw new Error("unused");
+						},
+						refresh,
+						toAuth,
+					},
+				},
+				getModels: () => [model],
+				stream: () => {
+					throw new Error("unused");
+				},
+				streamSimple: (model, _context, options) => {
+					calls.push({ model, options });
+					const stream = createAssistantMessageEventStream();
+					const message = {
+						...fauxAssistantMessage("synthetic"),
+						api: model.api,
+						provider: model.provider,
+						model: model.id,
+					};
+					stream.push({ type: "done", reason: "stop", message });
+					stream.end(message);
+					return stream;
+				},
+			};
+		});
+		vi.spyOn(builtinProviderCatalog, "builtinProviders").mockReturnValue(providers);
+		for (const provider of providers) {
+			await credentials.modify(provider.id, async () => ({
+				type: "oauth",
+				access: provider.id === "anthropic" ? "sk-ant-oat-synthetic" : "subscription-access",
+				refresh: "synthetic-refresh",
+				expires: Date.now() + 60 * 60_000,
+			}));
+		}
+		const runtime = await ModelRuntime.create({ credentials, modelsPath: null });
+		return { runtime, registry: new ModelRegistry(runtime), credentials, providers, calls, ambient, refresh, toAuth };
+	}
+
+	it("dispatches the unchanged subscription selection and reasoning with frozen metadata only", async () => {
+		const { registry, calls, ambient } = await setupSubscription({ supportsDeveloperRole: true });
+		const model = registry.find("openai", "subscription-model")!;
+		const selected = structuredClone(model);
+		const onDispatch = vi.fn<NonNullable<SubscriptionSimpleStreamOptions["onDispatch"]>>((request) => {
+			expect(Object.isFrozen(request)).toBe(true);
+			expect(request).toEqual({ provider: "openai", modelID: model.id, api: model.api });
+		});
+		const result = await registry
+			.streamSubscriptionSimple(model, { messages: [] }, { reasoning: "high", onDispatch })
+			.result();
+
+		expect(result.stopReason).toBe("stop");
+		expect(result.errorMessage).toBeUndefined();
+		expect(calls).toHaveLength(1);
+		expect(calls[0].model).toEqual(selected);
+		expect(calls[0].options).toMatchObject({ apiKey: "subscription-access", reasoning: "high" });
+		expect(calls[0].options).not.toHaveProperty("onDispatch");
+		expect(model).toEqual(selected);
+		expect(onDispatch).toHaveBeenCalledOnce();
+		expect(ambient).not.toHaveBeenCalled();
+	});
+
+	it("rejects direct mutation of canonical transport and OAuth handlers", async () => {
+		const mutations: ((provider: Provider) => void)[] = [
+			(provider) => {
+				provider.streamSimple = () => {
+					throw new Error("mutated transport reached");
+				};
+			},
+			(provider) => {
+				provider.auth.oauth!.toAuth = async () => ({ apiKey: "subscription-shaped-other-token" });
+			},
+			(provider) => {
+				provider.auth.oauth!.refresh = async (credential) => credential;
+			},
+			(provider) => {
+				Object.assign(provider, { baseUrl: "https://custom.test" });
+			},
+			(provider) => {
+				Object.assign(provider, { headers: { Authorization: "other" } });
+			},
+		];
+		for (const mutate of mutations) {
+			const { runtime, registry, calls } = await setupSubscription();
+			mutate(runtime.getProvider("openai")!);
+			const result = await registry
+				.streamSubscriptionSimple(registry.find("openai", "subscription-model")!, { messages: [] })
+				.result();
+			expect(result.errorMessage).toContain("Subscription transport could not be established");
+			expect(calls).toHaveLength(0);
+		}
+	});
+
+	it("rechecks runtime auth after awaited OAuth resolution and observer mutations", async () => {
+		const { runtime, registry, calls, toAuth } = await setupSubscription();
+		const model = registry.find("openai", "subscription-model")!;
+		toAuth.mockImplementationOnce(async (credential) => {
+			await runtime.setRuntimeApiKey("openai", "during-resolution");
+			return { apiKey: credential.access };
+		});
+		const result = await registry.streamSubscriptionSimple(model, { messages: [] }).result();
+		expect(result.errorMessage).toContain("Stored subscription OAuth is required");
+		await runtime.removeRuntimeApiKey("openai");
+		const observed = await registry
+			.streamSubscriptionSimple(
+				model,
+				{ messages: [] },
+				{
+					onDispatch: () => {
+						runtime.getProvider("openai")!.streamSimple = () => {
+							throw new Error("observer transport reached");
+						};
+					},
+				},
+			)
+			.result();
+		expect(observed.errorMessage).toContain("Subscription transport could not be established");
+		expect(calls).toHaveLength(0);
+	});
+
+	it("rejects explicit auth, payload, header and transport overrides before dispatch", async () => {
+		const { registry, calls } = await setupSubscription();
+		const model = registry.find("openai", "subscription-model")!;
+		const overrides: ModelsSimpleStreamOptions[] = [
+			{ apiKey: "explicit-key" },
+			{ env: {} },
+			{ headers: { Authorization: "other" } },
+			{ transformHeaders: async () => ({ Authorization: "other" }) },
+			{ fetch: vi.fn() },
+			{ onPayload: () => ({ model: "other" }) },
+			{ onResponse: () => undefined },
+			{ onProviderStreamEvent: () => undefined },
+			{ samplingParams: { model: "other" } },
+			{ transport: "websocket" },
+		];
+		for (const options of overrides) {
+			const onDispatch = vi.fn();
+			const result = await registry
+				.streamSubscriptionSimple(model, { messages: [] }, { ...options, onDispatch })
+				.result();
+			expect(result.stopReason).toBe("error");
+			expect(result.errorMessage).toContain("Subscription requests cannot override");
+			expect(onDispatch).not.toHaveBeenCalled();
+		}
+		expect(calls).toHaveLength(0);
+	});
+
+	it("rejects runtime keys and credential changes after cached OAuth admission", async () => {
+		const { registry, runtime, credentials, calls } = await setupSubscription();
+		const model = registry.find("openai", "subscription-model")!;
+		expect(registry.isUsingOAuth(model)).toBe(true);
+		await runtime.setRuntimeApiKey("openai", "runtime-key");
+		expect((await registry.streamSubscriptionSimple(model, { messages: [] }).result()).errorMessage).toContain(
+			"Stored subscription OAuth is required",
+		);
+		await runtime.removeRuntimeApiKey("openai");
+		expect(registry.isUsingOAuth(model)).toBe(true);
+		await credentials.modify("openai", async () => ({ type: "api_key", key: "changed-key" }));
+		expect(registry.isUsingOAuth(model)).toBe(true);
+		expect((await registry.streamSubscriptionSimple(model, { messages: [] }).result()).errorMessage).toContain(
+			"Stored subscription OAuth is required",
+		);
+		expect(calls).toHaveLength(0);
+	});
+
+	it("never falls back to an ambient key on OAuth refresh failure", async () => {
+		const { registry, credentials, calls, ambient, refresh } = await setupSubscription();
+		await credentials.modify("openai", async (current) =>
+			current?.type === "oauth" ? { ...current, expires: 0 } : undefined,
+		);
+		refresh.mockRejectedValueOnce(new Error("invalid_grant"));
+		const result = await registry
+			.streamSubscriptionSimple(registry.find("openai", "subscription-model")!, { messages: [] })
+			.result();
+		expect(result.errorMessage).toContain("OAuth refresh failed for openai");
+		expect(refresh).toHaveBeenCalledOnce();
+		expect(ambient).not.toHaveBeenCalled();
+		expect(calls).toHaveLength(0);
+	});
+
+	it("rejects malformed OAuth access that would select a metered adapter branch", async () => {
+		const { registry, credentials, calls } = await setupSubscription();
+		for (const provider of ["openai", "anthropic"]) {
+			await credentials.modify(provider, async (current) =>
+				current?.type === "oauth" ? { ...current, access: "sk-api-key-not-oauth" } : undefined,
+			);
+			const result = await registry
+				.streamSubscriptionSimple(registry.find(provider, "subscription-model")!, { messages: [] })
+				.result();
+			expect(result.errorMessage).toContain("Subscription transport could not be established");
+		}
+		expect(calls).toHaveLength(0);
+	});
+
+	it("checks the routed physical destination and lets the metadata observer reject it", async () => {
+		const { registry, credentials, calls } = await setupSubscription();
+		const physical = registry.find("anthropic", "subscription-model")!;
+		registry.registerVirtualModel({
+			provider: "openai",
+			id: "selected-alias",
+			name: "Alias",
+			thinkingLevels: ["high"],
+			route: () => ({ model: physical, thinkingLevel: "high" }),
+		});
+		const alias = registry.find("openai", "selected-alias")!;
+		const selected = structuredClone(alias);
+		const onDispatch = vi.fn<NonNullable<SubscriptionSimpleStreamOptions["onDispatch"]>>((request) => {
+			expect(request.provider).toBe("anthropic");
+		});
+		await registry.streamSubscriptionSimple(alias, { messages: [] }, { reasoning: "high", onDispatch }).result();
+		expect(calls).toHaveLength(1);
+		expect(calls[0]).toMatchObject({
+			model: { provider: "anthropic", id: physical.id },
+			options: { reasoning: "high" },
+		});
+		expect(alias).toEqual(selected);
+		expect(onDispatch).toHaveBeenCalledOnce();
+		calls.length = 0;
+		const rejected = await registry
+			.streamSubscriptionSimple(
+				alias,
+				{ messages: [] },
+				{
+					onDispatch: () => {
+						throw new Error("physical provider denied");
+					},
+				},
+			)
+			.result();
+		expect(rejected.errorMessage).toBe("physical provider denied");
+		expect(calls).toHaveLength(0);
+		await credentials.modify("anthropic", async () => ({ type: "api_key", key: "physical-key" }));
+		const result = await registry.streamSubscriptionSimple(alias, { messages: [] }, { onDispatch }).result();
+		expect(result.errorMessage).toContain("Stored subscription OAuth is required for anthropic");
+		expect(onDispatch).toHaveBeenCalledOnce();
+		expect(calls).toHaveLength(0);
+		await registry
+			.streamSubscriptionSimple(alias, { messages: [] }, {
+				apiKey: "caller-key",
+				reasoning: "high",
+			} as ModelsSimpleStreamOptions)
+			.result();
+		expect(calls).toHaveLength(0);
+	});
+
+	it("rejects custom model endpoints, headers, APIs, body overrides and fallbacks", async () => {
+		const { registry, calls } = await setupSubscription();
+		const model = registry.find("openai", "subscription-model")!;
+		for (const changed of [
+			{ ...model, baseUrl: "https://custom.test/v1" },
+			{ ...model, api: "unknown-api" },
+			{ ...model, id: "unknown-model" },
+			{ ...model, reasoning: false },
+			{ ...model, thinkingLevelMap: { high: "low" } },
+			{ ...model, headers: { authorization: "other" } },
+			{ ...model, samplingParams: { model: "other" } },
+			{ ...model, samplingParamsByThinkingLevel: { high: { model: "other" } } },
+			{ ...model, compat: { supportsDeveloperRole: false } },
+		]) {
+			expect((await registry.streamSubscriptionSimple(changed, { messages: [] }).result()).errorMessage).toContain(
+				"Subscription transport could not be established",
+			);
+		}
+		const anthropic = registry.find("anthropic", "subscription-model")!;
+		const fallback = {
+			...anthropic,
+			compat: { allowedFallbackModels: [{ provider: "anthropic", model: "other", cost: anthropic.cost }] },
+		};
+		expect((await registry.streamSubscriptionSimple(fallback, { messages: [] }).result()).errorMessage).toContain(
+			"Subscription transport could not be established",
+		);
+		expect(calls).toHaveLength(0);
+	});
+
+	it("rejects customized providers and canonical fallback transport", async () => {
+		const { registry, runtime, calls, providers } = await setupSubscription({
+			allowedFallbackModels: [{ provider: "anthropic", model: "other", cost: testModel("other").cost }],
+		});
+		const model = registry.find("anthropic", "subscription-model")!;
+		expect((await registry.streamSubscriptionSimple(model, { messages: [] }).result()).errorMessage).toContain(
+			"Subscription transport could not be established",
+		);
+		runtime.registerNativeProvider({
+			...providers[0],
+			streamSimple: () => {
+				throw new Error("custom transport reached");
+			},
+		});
+		expect(
+			(
+				await registry
+					.streamSubscriptionSimple(registry.find("openai", "subscription-model")!, { messages: [] })
+					.result()
+			).errorMessage,
+		).toContain("Subscription transport could not be established");
+		expect(calls).toHaveLength(0);
+	});
+});
 
 describe("ModelRuntime auth options", () => {
 	it("accepts a pi-ai CredentialStore", async () => {
