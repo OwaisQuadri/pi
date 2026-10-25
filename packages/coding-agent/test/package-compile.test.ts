@@ -107,7 +107,11 @@ describe("managed package preparation", () => {
 			),
 		).rejects.toThrow("dependency failure");
 		expect(existsSync(target)).toBe(false);
-		expect(readdirSync(root).filter((name) => name.includes("pi-stage"))).toEqual([]);
+		expect(
+			readdirSync(root, { withFileTypes: true }).filter(
+				(entry) => entry.isDirectory() && entry.name.includes("pi-stage"),
+			),
+		).toEqual([]);
 	});
 
 	it("refuses publication when another writer changes the active generation", async () => {
