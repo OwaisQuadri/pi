@@ -7,6 +7,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DefaultPackageManager, type ProgressEvent, type ResolvedResource } from "../src/core/package-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 
+function useWindowsPlatform(): void {
+	vi.stubGlobal(
+		"process",
+		new Proxy(process, {
+			get(target, key) {
+				return key === "platform" ? "win32" : Reflect.get(target, key);
+			},
+		}),
+	);
+}
+
 function normalizeForMatch(value: string): string {
 	return value.replace(/\\/g, "/");
 }
@@ -795,7 +806,8 @@ Content`,
 			);
 		});
 
-		it("should install git package dependencies without auto-installing peers", async () => {
+		it("should install Windows git package dependencies without auto-installing peers", async () => {
+			useWindowsPlatform();
 			const source = "git:github.com/user/repo";
 			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
 			const runCommandSpy = vi
@@ -815,7 +827,41 @@ Content`,
 			});
 		});
 
-		it("should remove a newly created checkout when git clone fails", async () => {
+		it("should refuse compiled Windows Git packages before dependency installation", async () => {
+			useWindowsPlatform();
+			const source = "git:github.com/user/repo";
+			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
+			const internals = packageManager as unknown as PackageManagerInternals;
+			const run = vi.spyOn(internals, "runCommand").mockImplementation(async (_command, args) => {
+				if (args[0] === "clone") {
+					mkdirSync(targetDir, { recursive: true });
+					writeFileSync(
+						join(targetDir, "package.json"),
+						JSON.stringify({ pi: { compile: ["node", "build.js"] } }),
+					);
+				}
+			});
+			await expect(packageManager.install(source)).rejects.toThrow("Windows compilation was not performed");
+			expect(run).toHaveBeenCalledTimes(1);
+			expect(existsSync(targetDir)).toBe(false);
+		});
+
+		it("should refuse an existing compiled Windows Git package before fetching or cleaning", async () => {
+			useWindowsPlatform();
+			const source = "git:github.com/user/repo@main";
+			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
+			mkdirSync(targetDir, { recursive: true });
+			writeFileSync(join(targetDir, "package.json"), JSON.stringify({ pi: { compile: ["node", "build.js"] } }));
+			writeFileSync(join(targetDir, "tool"), "working");
+			const internals = packageManager as unknown as PackageManagerInternals;
+			const run = vi.spyOn(internals, "runCommand");
+			await expect(packageManager.install(source)).rejects.toThrow("Windows compilation was not performed");
+			expect(run).not.toHaveBeenCalled();
+			expect(existsSync(join(targetDir, "tool"))).toBe(true);
+		});
+
+		it("should remove a newly created Windows checkout when git clone fails", async () => {
+			useWindowsPlatform();
 			const source = "git:github.com/user/repo";
 			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
 			vi.spyOn(packageManager as any, "runCommand").mockImplementation(async (...callArgs: unknown[]) => {
@@ -831,7 +877,8 @@ Content`,
 			expect(existsSync(targetDir)).toBe(false);
 		});
 
-		it("should remove a newly cloned checkout when dependency installation fails", async () => {
+		it("should remove a newly cloned Windows checkout when dependency installation fails", async () => {
+			useWindowsPlatform();
 			const source = "git:github.com/user/repo";
 			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
 			vi.spyOn(packageManager as any, "runCommand").mockImplementation(async (...callArgs: unknown[]) => {
@@ -851,7 +898,8 @@ Content`,
 			expect(existsSync(targetDir)).toBe(false);
 		});
 
-		it("should reconcile an existing git checkout to a pinned ref during install", async () => {
+		it("should reconcile an existing Windows git checkout to a pinned ref during install", async () => {
+			useWindowsPlatform();
 			const source = "git:github.com/user/repo@v2";
 			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
 			mkdirSync(targetDir, { recursive: true });
@@ -881,7 +929,8 @@ Content`,
 			});
 		});
 
-		it("should reconcile an existing git checkout to its update target when installing without a ref", async () => {
+		it("should reconcile an existing Windows git checkout to its update target when installing without a ref", async () => {
+			useWindowsPlatform();
 			const source = "git:github.com/user/repo";
 			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
 			const fetchArgs = ["fetch", "--prune", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"];
@@ -935,8 +984,9 @@ Content`,
 			]);
 		});
 
-		it("should detect pnpm through a corepack wrapper without a separator", async () => {
+		it("should detect pnpm through a corepack wrapper without a separator on Windows", async () => {
 			// Regression for #9863.
+			useWindowsPlatform();
 			settingsManager = SettingsManager.inMemory({
 				npmCommand: ["corepack", "pnpm"],
 			});
@@ -974,7 +1024,8 @@ Content`,
 			);
 		});
 
-		it("should disable peer installation for git package dependencies with bun", async () => {
+		it("should disable peer installation for Windows git package dependencies with bun", async () => {
+			useWindowsPlatform();
 			settingsManager = SettingsManager.inMemory({
 				npmCommand: ["bun"],
 			});
@@ -1003,7 +1054,8 @@ Content`,
 			});
 		});
 
-		it("should update git package dependencies without auto-installing peers", async () => {
+		it("should update Windows git package dependencies without auto-installing peers", async () => {
+			useWindowsPlatform();
 			const source = "git:github.com/user/repo";
 			const targetDir = join(tempDir, ".pi", "git", "github.com", "user", "repo");
 			mkdirSync(targetDir, { recursive: true });
@@ -1032,7 +1084,8 @@ Content`,
 			});
 		});
 
-		it("should repair missing git package dependencies when the checkout is already current", async () => {
+		it("should repair missing Windows git package dependencies when the checkout is already current", async () => {
+			useWindowsPlatform();
 			const source = "git:github.com/user/repo";
 			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
 			const fetchArgs = ["fetch", "--prune", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"];
@@ -1060,7 +1113,8 @@ Content`,
 			expect(runCommandSpy).not.toHaveBeenCalledWith("git", ["clean", "-fdx"], { cwd: targetDir });
 		});
 
-		it("should repair deleted git package dependencies when cleaning fails", async () => {
+		it("should repair deleted Windows git package dependencies when cleaning fails", async () => {
+			useWindowsPlatform();
 			const source = "git:github.com/user/repo";
 			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
 			const fetchArgs = ["fetch", "--prune", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"];
@@ -1093,7 +1147,8 @@ Content`,
 			});
 		});
 
-		it("should disable peer installation through wrapped pnpm when updating git dependencies", async () => {
+		it("should disable peer installation through wrapped pnpm when updating Windows git dependencies", async () => {
+			useWindowsPlatform();
 			settingsManager = SettingsManager.inMemory({
 				npmCommand: ["mise", "exec", "node@20", "--", "pnpm"],
 			});
@@ -1330,7 +1385,8 @@ Content`,
 			expect(events.some((e) => e.type === "error")).toBe(true);
 		});
 
-		it("should recognize github URLs without git: prefix", async () => {
+		it("should recognize github URLs without git: prefix on Windows", async () => {
+			useWindowsPlatform();
 			const events: ProgressEvent[] = [];
 			packageManager.setProgressCallback((event) => events.push(event));
 			const runCommand = vi

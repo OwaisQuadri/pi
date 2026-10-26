@@ -1,5 +1,12 @@
 import { join, resolve } from "node:path";
-import { resetCapabilitiesCache, setCapabilities, Text, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import {
+	resetCapabilitiesCache,
+	setCapabilities,
+	Text,
+	type TUI,
+	type TuiMouseEvent,
+	visibleWidth,
+} from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 
@@ -688,7 +695,8 @@ describe("ToolExecutionComponent parity", () => {
 				false,
 			);
 
-			const collapsed = stripAnsi(component.render(120).join("\n"));
+			const width = Math.max(120, visibleWidth(scenario.compact) + 2);
+			const collapsed = stripAnsi(component.render(width).join("\n"));
 			expect(collapsed).toContain(scenario.compact);
 			expect(collapsed).not.toContain(scenario.hidden);
 			if (scenario.absent) {
@@ -696,7 +704,7 @@ describe("ToolExecutionComponent parity", () => {
 			}
 
 			component.setExpanded(true);
-			const expanded = stripAnsi(component.render(120).join("\n"));
+			const expanded = stripAnsi(component.render(width).join("\n"));
 			expect(expanded).toContain(scenario.hidden);
 		});
 	}

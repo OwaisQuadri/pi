@@ -21,6 +21,7 @@ export interface AuthResolutionOverrides {
 	env?: ProviderEnv;
 	/** Require this much remaining OAuth-token validity; defaults to five minutes. */
 	minOAuthValidityMs?: number;
+	isSubscriptionOnly?: boolean;
 	signal?: AbortSignal;
 }
 
@@ -51,6 +52,9 @@ async function resolveProviderAuthWithSignal(
 	signal: AbortSignal,
 ): Promise<AuthResult | undefined> {
 	signal.throwIfAborted();
+	if (overrides?.isSubscriptionOnly && (overrides.apiKey !== undefined || overrides.env !== undefined)) {
+		throw new ModelsError("auth", `Subscription requests cannot override authentication for ${provider.id}`);
+	}
 	const requestAuthContext = overrides?.env ? overlayEnvAuthContext(authContext, overrides.env) : authContext;
 
 	if (overrides?.apiKey !== undefined && provider.auth.apiKey) {
@@ -68,6 +72,9 @@ async function resolveProviderAuthWithSignal(
 	}
 
 	const stored = await readCredential(credentials, provider.id, signal);
+	if (overrides?.isSubscriptionOnly && (stored?.type !== "oauth" || !provider.auth.oauth?.isSubscription)) {
+		throw new ModelsError("auth", `Stored subscription OAuth is required for ${provider.id}`);
+	}
 	if (stored) {
 		if (stored.type === "oauth" && provider.auth.oauth) {
 			return resolveStoredOAuth(
