@@ -16,6 +16,7 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { spawnProcess } from "../utils/child-process.ts";
+import { isStdoutTakenOver } from "./output-guard.ts";
 
 interface PackageTransaction {
 	version: 1;
@@ -399,7 +400,11 @@ async function runPreparedCommand(
 				command,
 				...args,
 			],
-			{ cwd: existsSync(stage) ? stage : dirname(stage), detached: true, stdio: ["pipe", "inherit", "inherit"] },
+			{
+				cwd: existsSync(stage) ? stage : dirname(stage),
+				detached: true,
+				stdio: ["pipe", isStdoutTakenOver() ? 2 : "inherit", "inherit"],
+			},
 		);
 		let failure: Error | undefined;
 		const stop = () => {
