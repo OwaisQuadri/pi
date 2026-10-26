@@ -1,4 +1,5 @@
 import { dirname, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import {
 	type AnyModel,
 	type Api,
@@ -130,7 +131,26 @@ export interface ModelRuntimeAuthOverrides extends AuthOperationOptions {
 	env?: Record<string, string>;
 	/** Require this much remaining OAuth-token validity; defaults to five minutes. */
 	minOAuthValidityMs?: number;
+	isSubscriptionOnly?: boolean;
 }
+
+export type SubscriptionSimpleStreamOptions = Pick<
+	ModelsSimpleStreamOptions,
+	| "signal"
+	| "telemetry"
+	| "timeoutMs"
+	| "maxRetries"
+	| "maxRetryDelayMs"
+	| "temperature"
+	| "maxTokens"
+	| "cacheRetention"
+	| "sessionId"
+	| "reasoning"
+	| "thinkingBudgets"
+	| "toolChoice"
+> & {
+	onDispatch?: (request: Readonly<{ provider: string; modelID: string; api: Api }>) => void;
+};
 
 export type CredentialSynchronizationOperation = "login" | "logout" | "setRuntimeApiKey" | "removeRuntimeApiKey";
 
@@ -175,6 +195,14 @@ export class ModelRuntime implements Models {
 	private readonly models: MutableModels;
 	private readonly credentials: RuntimeCredentials;
 	private readonly defaultBuiltins: ReadonlyMap<string, Provider>;
+	private readonly subscriptionProviders = new Map<
+		string,
+		{
+			models: ReadonlyMap<string, Pick<Model<Api>, "api" | "baseUrl" | "compat" | "reasoning" | "thinkingLevelMap">>;
+			transport: Pick<Provider, "streamSimple" | "baseUrl" | "headers">;
+			oauth: Pick<NonNullable<Provider["auth"]["oauth"]>, "toAuth" | "refresh" | "isSubscription"> | undefined;
+		}
+	>();
 	private readonly builtins = new Map<string, Provider>();
 	private readonly nativeExtensionProviders = new Map<string, Provider>();
 	private readonly extensionProviders = new Map<string, ProviderConfigInput>();
@@ -210,6 +238,35 @@ export class ModelRuntime implements Models {
 		this.modelsPath = modelsPath;
 		this.modelNetworkEnabled = modelNetworkEnabled;
 		this.defaultBuiltins = new Map(providers.map((provider) => [provider.id, provider]));
+		for (const [providerId, api] of [
+			["openai", "openai-responses"],
+			["anthropic", "anthropic-messages"],
+			["openai-codex", "openai-codex-responses"],
+		] as const) {
+			const provider = this.defaultBuiltins.get(providerId);
+			if (!provider) continue;
+			this.subscriptionProviders.set(provider.id, {
+				models: new Map(
+					provider
+						.getModels()
+						.filter((model) => model.api === api)
+						.map(({ id, api, baseUrl, compat, reasoning, thinkingLevelMap }) => [
+							id,
+							structuredClone({ api, baseUrl, compat, reasoning, thinkingLevelMap }),
+						]),
+				),
+				transport: {
+					streamSimple: provider.streamSimple,
+					baseUrl: provider.baseUrl,
+					headers: provider.headers && { ...provider.headers },
+				},
+				oauth: provider.auth.oauth && {
+					toAuth: provider.auth.oauth.toAuth,
+					refresh: provider.auth.oauth.refresh,
+					isSubscription: provider.auth.oauth.isSubscription,
+				},
+			});
+		}
 		for (const [providerId, provider] of this.defaultBuiltins) this.builtins.set(providerId, provider);
 		this.models = createModels({ credentials, modelsStore });
 		this.rebuildProviders();
@@ -662,19 +719,44 @@ export class ModelRuntime implements Models {
 	>(
 		model: TModel,
 		options: TOptions | undefined,
+		isSubscriptionOnly = false,
 	): Promise<{
 		provider: Provider;
 		model: TModel;
 		options: Omit<TOptions, "transformHeaders"> & ProviderRequestOptions<TModel>;
 	}> {
-		const provider = this.models.getProvider(model.provider);
+		const provider = isSubscriptionOnly
+			? this.composeProvider(model.provider)
+			: this.models.getProvider(model.provider);
 		if (!provider) throw new ModelsError("provider", `Unknown provider: ${model.provider}`);
+		if (isSubscriptionOnly) this.assertSubscriptionTransport(model);
 		const resolution = await this.getAuth(model, {
 			apiKey: options?.apiKey,
 			env: options?.env,
 			signal: options?.signal,
+			isSubscriptionOnly,
 		});
 		if (!resolution) throw new ModelsError("auth", `Provider is not configured: ${model.provider}`);
+		if (isSubscriptionOnly) {
+			this.assertSubscriptionTransport(model);
+			const key = resolution.auth.apiKey;
+			const isSubscriptionAdapter =
+				(model.provider === "openai" && model.api === "openai-responses" && !!key && !key.startsWith("sk-")) ||
+				(model.provider === "anthropic" && model.api === "anthropic-messages" && !!key?.includes("sk-ant-oat")) ||
+				(model.provider === "openai-codex" && model.api === "openai-codex-responses" && !!key);
+			if (
+				!isSubscriptionAdapter ||
+				resolution.auth.baseUrl !== undefined ||
+				resolution.auth.headers !== undefined ||
+				resolution.env !== undefined ||
+				this.composeProvider(model.provider) !== provider
+			) {
+				throw new ModelsError(
+					"auth",
+					`Subscription transport could not be established for ${model.provider}/${model.id}`,
+				);
+			}
+		}
 
 		const { transformHeaders, ...rawProviderOptions } = options ?? {};
 		const providerOptions = rawProviderOptions as Omit<TOptions, "transformHeaders"> & ProviderRequestOptions<TModel>;
@@ -728,7 +810,95 @@ export class ModelRuntime implements Models {
 		return this.stream(model, context, options).result();
 	}
 
+	streamSubscriptionSimple(
+		model: Model<Api>,
+		context: Context,
+		options?: SubscriptionSimpleStreamOptions,
+	): AssistantMessageEventStream {
+		const { onDispatch, ...requestOptions } = options ?? {};
+		const requestModel = structuredClone(model);
+		return lazyStream(requestModel, async () => {
+			for (const [key, value] of Object.entries(requestOptions)) {
+				if (
+					value !== undefined &&
+					![
+						"signal",
+						"telemetry",
+						"timeoutMs",
+						"maxRetries",
+						"maxRetryDelayMs",
+						"temperature",
+						"maxTokens",
+						"cacheRetention",
+						"sessionId",
+						"reasoning",
+						"thinkingBudgets",
+						"toolChoice",
+					].includes(key)
+				) {
+					throw new ModelsError("auth", `Subscription requests cannot override ${key}`);
+				}
+			}
+			return this.dispatchSimple(requestModel, context, requestOptions, true, onDispatch);
+		});
+	}
+
+	private assertSubscriptionTransport(model: AnyModel): void {
+		const builtin = this.defaultBuiltins.get(model.provider);
+		const canonicalProvider = this.subscriptionProviders.get(model.provider);
+		const canonical = canonicalProvider?.models.get(model.id);
+		if (this.credentials.hasRuntimeApiKey(model.provider)) {
+			throw new ModelsError("auth", `Stored subscription OAuth is required for ${model.provider}`);
+		}
+		if (
+			!builtin ||
+			!canonicalProvider ||
+			this.builtins.get(model.provider) !== builtin ||
+			this.nativeExtensionProviders.has(model.provider) ||
+			this.extensionProviders.has(model.provider) ||
+			this.config.getProvider(model.provider) ||
+			!canonical ||
+			builtin.streamSimple !== canonicalProvider.transport.streamSimple ||
+			builtin.baseUrl !== canonicalProvider.transport.baseUrl ||
+			!isDeepStrictEqual(builtin.headers, canonicalProvider.transport.headers) ||
+			canonicalProvider.oauth?.isSubscription !== true ||
+			builtin.auth.oauth?.toAuth !== canonicalProvider.oauth?.toAuth ||
+			builtin.auth.oauth?.refresh !== canonicalProvider.oauth?.refresh ||
+			!builtin.auth.oauth?.isSubscription ||
+			this.models.getProvider(model.provider)?.auth !== builtin.auth ||
+			model.api !== canonical.api ||
+			model.baseUrl !== canonical.baseUrl ||
+			model.baseUrl !== canonicalProvider.transport.baseUrl ||
+			model.headers !== undefined ||
+			!("reasoning" in model) ||
+			model.reasoning !== canonical.reasoning ||
+			!isDeepStrictEqual(model.thinkingLevelMap, canonical.thinkingLevelMap) ||
+			model.samplingParams !== undefined ||
+			model.samplingParamsByThinkingLevel !== undefined ||
+			!isDeepStrictEqual(model.compat, canonical.compat) ||
+			(model.compat &&
+				"allowedFallbackModels" in model.compat &&
+				Array.isArray(model.compat.allowedFallbackModels) &&
+				model.compat.allowedFallbackModels.length > 0)
+		) {
+			throw new ModelsError(
+				"auth",
+				`Subscription transport could not be established for ${model.provider}/${model.id}`,
+			);
+		}
+	}
+
 	streamSimple(model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions): AssistantMessageEventStream {
+		return this.dispatchSimple(model, context, options);
+	}
+
+	private dispatchSimple(
+		model: Model<Api>,
+		context: Context,
+		options?: ModelsSimpleStreamOptions,
+		isSubscriptionOnly = false,
+		onDispatch?: SubscriptionSimpleStreamOptions["onDispatch"],
+	): AssistantMessageEventStream {
 		const transcript = normalizeContext(context);
 		if (isVirtualModel(model)) {
 			// Requests outside the agent loop are routed here. Callers sized them before routing, so
@@ -746,12 +916,22 @@ export class ModelRuntime implements Models {
 				// resolves its own, so they are not sent to the wrong vendor.
 				const { apiKey, headers, env, ...rest } = options ?? {};
 				const auth = route.model.provider === model.provider ? { apiKey, headers, env } : {};
-				return this.streamSimple(route.model, context, { ...rest, ...auth, maxTokens, reasoning });
+				return this.dispatchSimple(
+					isSubscriptionOnly ? structuredClone(route.model) : route.model,
+					context,
+					{ ...rest, ...auth, maxTokens, reasoning },
+					isSubscriptionOnly,
+					onDispatch,
+				);
 			});
 		}
 		return lazyStream(model, async () => {
 			assertChatModel(model);
-			const prepared = await this.prepareRequest(model, options);
+			const prepared = await this.prepareRequest(model, options, isSubscriptionOnly);
+			onDispatch?.(
+				Object.freeze({ provider: prepared.model.provider, modelID: prepared.model.id, api: prepared.model.api }),
+			);
+			if (isSubscriptionOnly) this.assertSubscriptionTransport(prepared.model);
 			return prepared.provider.streamSimple(prepared.model, transcript, prepared.options as SimpleStreamOptions);
 		});
 	}
