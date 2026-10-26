@@ -57,9 +57,11 @@ If you send a large volume of issues through automation, your GitHub account wil
 
 Do not open a PR unless you have already been approved by a maintainer using `lgtm` in the command position described above.
 
-Before submitting a PR:
+Before submitting a PR, prepare the
+[package-compilation test fixture](README.md#development) and set
+`PI_COMPILED_ROOT` as described there:
 
-```bash
+```zsh
 npm run check
 ./test.sh
 ```
