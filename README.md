@@ -101,7 +101,19 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines and [AGENTS.m
 
 ## Development
 
-```bash
+On macOS and Linux, package-compilation tests require a local
+[pi-compiled](https://github.com/OwaisQuadri/pi-compiled) checkout at the immutable
+`ref` in the `Checkout compiler fixture` step of
+[the test workflow](.github/workflows/ci.yml). That checkout includes its runtime
+files; no dependency installation is needed for the fixture.
+
+Set `PI_COMPILED_ROOT` to its absolute checkout path before running the tests:
+
+```zsh
+export PI_COMPILED_ROOT="/absolute/path/to/pi-compiled"
+```
+
+```zsh
 npm install --ignore-scripts  # Install all dependencies without running lifecycle scripts
 npm run build         # Refresh model data, then build all packages
 npm run build:offline # Rebuild using existing model data without network access
