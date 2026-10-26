@@ -871,6 +871,61 @@ describe("Models runtime", () => {
 		expect(apiKeyResolution?.source).toBe("stored");
 	});
 
+	it("requires stored subscription OAuth on the exact auth resolution", async () => {
+		const credentials = new InMemoryCredentialStore();
+		const ambient = vi.fn(envKeyAuth("ambient-key").resolve);
+		const models = createModels({ credentials });
+		const oauth = testOAuth({ isSubscription: true });
+		models.setProvider(testProvider({ id: "p1", auth: { apiKey: { name: "Ambient", resolve: ambient }, oauth } }));
+
+		await expect(models.getAuth("p1", { isSubscriptionOnly: true })).rejects.toMatchObject({ code: "auth" });
+		await credentials.modify("p1", async () => ({ type: "api_key", key: "stored-key" }));
+		await expect(models.getAuth("p1", { isSubscriptionOnly: true })).rejects.toMatchObject({ code: "auth" });
+		await credentials.modify("p1", async () => ({
+			type: "oauth",
+			access: "subscription-access",
+			refresh: "refresh",
+			expires: Date.now() + 60 * 60_000,
+		}));
+		expect((await models.getAuth("p1", { isSubscriptionOnly: true }))?.auth.apiKey).toBe("subscription-access");
+		await expect(models.getAuth("p1", { isSubscriptionOnly: true, apiKey: "explicit-key" })).rejects.toMatchObject({
+			code: "auth",
+		});
+		await expect(models.getAuth("p1", { isSubscriptionOnly: true, env: {} })).rejects.toMatchObject({ code: "auth" });
+		oauth.isSubscription = false;
+		await expect(models.getAuth("p1", { isSubscriptionOnly: true })).rejects.toMatchObject({ code: "auth" });
+		expect(ambient).not.toHaveBeenCalled();
+	});
+
+	it("does not fall back to ambient keys after subscription OAuth refresh fails", async () => {
+		const credentials = new InMemoryCredentialStore();
+		const ambient = vi.fn(envKeyAuth("ambient-key").resolve);
+		const models = createModels({ credentials });
+		models.setProvider(
+			testProvider({
+				id: "p1",
+				auth: {
+					apiKey: { name: "Ambient", resolve: ambient },
+					oauth: testOAuth({
+						isSubscription: true,
+						refresh: async () => {
+							throw new Error("invalid_grant");
+						},
+					}),
+				},
+			}),
+		);
+		await credentials.modify("p1", async () => ({
+			type: "oauth",
+			access: "expired",
+			refresh: "refresh",
+			expires: 0,
+		}));
+
+		await expect(models.getAuth("p1", { isSubscriptionOnly: true })).rejects.toMatchObject({ code: "oauth" });
+		expect(ambient).not.toHaveBeenCalled();
+	});
+
 	it("checks provider auth without refreshing OAuth and filters available models", async () => {
 		const credentials = new InMemoryCredentialStore();
 		let refreshes = 0;
