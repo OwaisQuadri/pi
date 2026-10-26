@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
 	existsSync,
 	mkdirSync,
@@ -63,6 +63,30 @@ describe("managed package preparation", () => {
 		);
 		expect(readFileSync(join(target, "tool"), "utf8")).toBe("new");
 		expect(readFileSync(join(target, "private-note"), "utf8")).toBe("keep");
+	});
+
+	it("keeps prepared command output out of protected stdout", () => {
+		const script = join(root, "protected-output.mjs");
+		writeFileSync(
+			script,
+			`import { mkdirSync } from "node:fs";
+import { preparePackage, withPackageLock } from ${JSON.stringify(new URL("../src/core/package-compile.ts", import.meta.url).href)};
+import { flushRawStdout, takeOverStdout, writeRawStdout } from ${JSON.stringify(new URL("../src/core/output-guard.ts", import.meta.url).href)};
+takeOverStdout();
+await withPackageLock(process.argv[2], (assertHeld) =>
+	preparePackage(process.argv[2], async (stage, _isExisting, run) => {
+		mkdirSync(stage);
+		await run(process.execPath, ["-e", "process.stdout.write('prepared-output\\\\n')"]);
+	}, assertHeld));
+writeRawStdout("protocol-output\\n");
+await flushRawStdout();
+`,
+		);
+		const result = spawnSync(process.execPath, [script, target], { encoding: "utf8", timeout: 10_000 });
+		expect(result.error).toBeUndefined();
+		expect(result.status, result.stderr).toBe(0);
+		expect(result.stdout).toBe("protocol-output\n");
+		expect(result.stderr).toContain("prepared-output\n");
 	});
 
 	it("keeps the working generation and permits a same-source retry after compile failure", async () => {
