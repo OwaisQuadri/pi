@@ -88,9 +88,18 @@ jobs:
         if: matrix.name == 'other'
         run: npm run build:daemon --workspace packages/env
 
+      - name: Checkout compiler fixture
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ github.repository_owner }}/pi-compiled
+          ref: c3328f892a1efb5eb080ecd77dfa4977d7f17314
+          path: .pi-compiled-fixture
+          persist-credentials: false
+
       - name: Test
         env:
           SUITE: ${{ matrix.name }}
+          PI_COMPILED_ROOT: ${{ github.workspace }}/.pi-compiled-fixture
         run: |
           if [ "$SUITE" != other ]; then
             npm run test --workspace "packages/$SUITE"

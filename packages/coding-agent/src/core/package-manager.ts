@@ -52,6 +52,17 @@ import {
 } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
 import { isStdoutTakenOver } from "./output-guard.ts";
+import {
+	assertPackageIsolation,
+	isPackageRecoveryNeeded,
+	type PackageCommand,
+	preparePackage,
+	readCompileCommand,
+	recoverPackage,
+	removePreparedPackage,
+	runPackageCompile,
+	withPackageLock,
+} from "./package-compile.ts";
 import { type PiManifest, readPiManifest } from "./pi-manifest.ts";
 import type { PackageSource, SettingsManager } from "./settings-manager.ts";
 import { BUILTIN_PATH_PREFIX, getResourcePathKey } from "./source-info.ts";
@@ -1297,6 +1308,12 @@ export class DefaultPackageManager implements PackageManager {
 		const installRoot = this.getNpmInstallRoot(scope, false);
 		this.ensureNpmProject(installRoot);
 		await this.runNpmCommand(this.getNpmInstallArgs(specs, installRoot));
+		for (const spec of specs) {
+			const parsed = this.parseSource(`npm:${spec}`);
+			if (parsed.type === "npm" && readCompileCommand(this.getNpmInstallPath(parsed, scope))) {
+				throw new Error("pi.compile requires a managed Git source; npm compilation was not performed");
+			}
+		}
 	}
 
 	async checkForAvailableUpdates(): Promise<PackageUpdate[]> {
@@ -1440,6 +1457,9 @@ export class DefaultPackageManager implements PackageManager {
 
 			if (parsed.type === "git") {
 				const installedPath = this.getGitInstallPath(parsed, resolvedScope);
+				if (isPackageRecoveryNeeded(installedPath)) {
+					await withPackageLock(installedPath, (assertHeld) => recoverPackage(installedPath, assertHeld));
+				}
 				if (!existsSync(installedPath)) {
 					const installed = await installMissing();
 					if (!installed) continue;
@@ -1712,6 +1732,7 @@ export class DefaultPackageManager implements PackageManager {
 
 	private async getLocalGitUpdateTarget(
 		installedPath: string,
+		packageCommand?: PackageCommand,
 	): Promise<{ ref: string; head: string; fetchArgs: string[] }> {
 		try {
 			const upstream = await this.runCommandCapture("git", ["rev-parse", "--abbrev-ref", "@{upstream}"], {
@@ -1742,7 +1763,10 @@ export class DefaultPackageManager implements PackageManager {
 				],
 			};
 		} catch {
-			await this.runCommand("git", ["remote", "set-head", "origin", "-a"], { cwd: installedPath }).catch(() => {});
+			await this.runCommand("git", ["remote", "set-head", "origin", "-a"], {
+				cwd: installedPath,
+				...(packageCommand ? { packageCommand } : {}),
+			}).catch(() => {});
 			const head = await this.runCommandCapture("git", ["rev-parse", "origin/HEAD"], {
 				cwd: installedPath,
 				timeoutMs: NETWORK_TIMEOUT_MS,
@@ -1925,7 +1949,10 @@ export class DefaultPackageManager implements PackageManager {
 		return wrappedPackageManagers[0] ?? directCommand;
 	}
 
-	private async runNpmCommand(args: string[], options?: { cwd?: string }): Promise<void> {
+	private async runNpmCommand(
+		args: string[],
+		options?: { cwd?: string; packageCommand?: PackageCommand },
+	): Promise<void> {
 		const npmCommand = this.getNpmCommand();
 		await this.runCommand(npmCommand.command, [...npmCommand.args, ...args], options);
 	}
@@ -1984,6 +2011,9 @@ export class DefaultPackageManager implements PackageManager {
 		const installRoot = this.getNpmInstallRoot(scope, temporary);
 		this.ensureNpmProject(installRoot);
 		await this.runNpmCommand(this.getNpmInstallArgs([source.spec], installRoot));
+		if (readCompileCommand(this.getNpmInstallPath(source, scope))) {
+			throw new Error("pi.compile requires a managed Git source; npm compilation was not performed");
+		}
 	}
 
 	private async uninstallNpm(source: NpmSource, scope: SourceScope): Promise<void> {
@@ -2006,6 +2036,10 @@ export class DefaultPackageManager implements PackageManager {
 	}
 
 	private async installGit(source: GitSource, scope: SourceScope): Promise<void> {
+		if (process.platform !== "win32") {
+			await this.prepareGitPackage(source, scope);
+			return;
+		}
 		const targetDir = this.getGitInstallPath(source, scope);
 		if (existsSync(targetDir)) {
 			if (source.ref) {
@@ -2028,6 +2062,8 @@ export class DefaultPackageManager implements PackageManager {
 			if (source.ref) {
 				await this.runCommand("git", ["checkout", source.ref], { cwd: targetDir });
 			}
+			if (readCompileCommand(targetDir))
+				throw new Error("pi.compile requires POSIX managed Git preparation; Windows compilation was not performed");
 			const packageJsonPath = join(targetDir, "package.json");
 			if (existsSync(packageJsonPath)) {
 				await this.runNpmCommand(this.getGitDependencyInstallArgs(), { cwd: targetDir });
@@ -2039,7 +2075,77 @@ export class DefaultPackageManager implements PackageManager {
 		}
 	}
 
+	private async prepareGitPackage(source: GitSource, scope: SourceScope): Promise<void> {
+		const targetDir = this.getGitInstallPath(source, scope);
+		const gitRoot = this.getGitInstallRoot(scope);
+		if (gitRoot) this.ensureGitIgnore(gitRoot);
+		await withPackageLock(targetDir, async (assertHeld) => {
+			await recoverPackage(targetDir, assertHeld);
+			if (existsSync(targetDir)) await this.assertManagedGitPackage(targetDir);
+			await preparePackage(
+				targetDir,
+				async (stage, isExisting, run) => {
+					const options = { cwd: stage, packageCommand: run };
+					if (isExisting) {
+						await this.assertManagedGitPackage(stage);
+						await this.runCommand("git", ["diff", "--quiet", "HEAD", "--"], options);
+						const target = source.ref
+							? { ref: "FETCH_HEAD", fetchArgs: ["fetch", "origin", source.ref] }
+							: await this.getLocalGitUpdateTarget(stage, run);
+						await this.runCommand("git", target.fetchArgs, options);
+						const targetHead = await this.runCommandCapture("git", ["rev-parse", `${target.ref}^{commit}`], {
+							cwd: stage,
+						});
+						await this.runCommand(
+							"git",
+							source.ref ? ["checkout", "--detach", targetHead] : ["reset", "--hard", targetHead],
+							options,
+						);
+					} else {
+						await this.runCommand("git", ["clone", source.repo, stage], { packageCommand: run });
+						if (source.ref) await this.runCommand("git", ["checkout", source.ref], options);
+					}
+					await this.assertManagedGitPackage(stage);
+					const compile = readCompileCommand(stage);
+					if (existsSync(join(stage, "package.json"))) {
+						const args = this.getGitDependencyInstallArgs();
+						if (compile) args.push("--ignore-scripts");
+						await this.runNpmCommand(args, options);
+					}
+					assertPackageIsolation(stage);
+					await runPackageCompile(stage, run);
+				},
+				assertHeld,
+			);
+			rmSync(this.getGitUpdateMarkerPath(targetDir), { force: true });
+		});
+	}
+
+	private async assertManagedGitPackage(root: string): Promise<void> {
+		assertPackageIsolation(root);
+		const config = await this.runCommandCapture(
+			"git",
+			["config", "--file", join(root, ".git", "config"), "--no-includes", "--list"],
+			{ cwd: root },
+		);
+		if (
+			/^(?:include(?:if\..*)?\.path|core\.(?:worktree|hookspath|fsmonitor)|filter\.|extensions\.worktreeconfig)/im.test(
+				config,
+			)
+		) {
+			throw new Error("Managed package preparation refuses indirect Git configuration");
+		}
+		const hooks = join(root, ".git", "hooks");
+		if (existsSync(hooks) && readdirSync(hooks).some((name) => !name.endsWith(".sample"))) {
+			throw new Error("Managed package preparation refuses Git hooks");
+		}
+	}
+
 	private async updateGit(source: GitSource, scope: SourceScope): Promise<void> {
+		if (process.platform !== "win32") {
+			await this.prepareGitPackage(source, scope);
+			return;
+		}
 		const targetDir = this.getGitInstallPath(source, scope);
 		if (!existsSync(targetDir)) {
 			await this.installGit(source, scope);
@@ -2090,6 +2196,8 @@ export class DefaultPackageManager implements PackageManager {
 	}
 
 	private async cleanAndInstallGitDependencies(targetDir: string, markerPath: string): Promise<void> {
+		if (readCompileCommand(targetDir))
+			throw new Error("pi.compile requires POSIX managed Git preparation; Windows compilation was not performed");
 		// Clean untracked files (extensions should be pristine). If this fails after
 		// deleting dependencies, repair them so the existing extension still loads.
 		try {
@@ -2107,6 +2215,8 @@ export class DefaultPackageManager implements PackageManager {
 	}
 
 	private async ensureGitRef(targetDir: string, fetchArgs: string[], ref: string): Promise<void> {
+		if (readCompileCommand(targetDir))
+			throw new Error("pi.compile requires POSIX managed Git preparation; Windows compilation was not performed");
 		// Fetch only the ref we will reset to, avoiding unrelated branch/tag noise.
 		await this.runCommand("git", fetchArgs, { cwd: targetDir });
 
@@ -2160,7 +2270,8 @@ export class DefaultPackageManager implements PackageManager {
 
 	private async removeGit(source: GitSource, scope: SourceScope): Promise<void> {
 		const targetDir = this.getGitInstallPath(source, scope);
-		rmSync(targetDir, { recursive: true, force: true });
+		if (process.platform === "win32") rmSync(targetDir, { recursive: true, force: true });
+		else await removePreparedPackage(targetDir);
 		rmSync(this.getGitUpdateMarkerPath(targetDir), { force: true });
 		this.pruneEmptyGitParents(targetDir, this.getGitInstallRoot(scope));
 	}
@@ -2864,7 +2975,12 @@ export class DefaultPackageManager implements PackageManager {
 		});
 	}
 
-	private runCommand(command: string, args: string[], options?: { cwd?: string }): Promise<void> {
+	private runCommand(
+		command: string,
+		args: string[],
+		options?: { cwd?: string; packageCommand?: PackageCommand },
+	): Promise<void> {
+		if (options?.packageCommand) return options.packageCommand(command, args);
 		return new Promise((resolvePromise, reject) => {
 			const child = this.spawnCommand(command, args, options);
 			child.on("error", reject);

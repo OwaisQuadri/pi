@@ -237,38 +237,41 @@ describe("DefaultPackageManager git update", () => {
 		it("should refresh cached temporary git sources when resolving", async () => {
 			const managerWithPaths = packageManager as unknown as PackageManagerPathInternals;
 			const cachedDir = managerWithPaths.getGitInstallPath(managerWithPaths.parseSource(gitSource), "temporary");
-			const extensionFile = join(cachedDir, "pi-extensions", "session-breakdown.ts");
-
-			rmSync(cachedDir, { recursive: true, force: true });
-			mkdirSync(join(cachedDir, "pi-extensions"), { recursive: true });
-			writeFileSync(
-				join(cachedDir, "package.json"),
+			mkdirSync(remoteDir, { recursive: true });
+			initGitRepo(remoteDir);
+			createCommit(
+				remoteDir,
+				"package.json",
 				JSON.stringify({ pi: { extensions: ["./pi-extensions"] } }, null, 2),
+				"Add package manifest",
 			);
-			writeFileSync(extensionFile, "// stale");
+			mkdirSync(join(remoteDir, "pi-extensions"));
+			createCommit(remoteDir, "pi-extensions/session-breakdown.ts", "// stale", "Initial extension");
+			mkdirSync(cachedDir, { recursive: true });
+			git(["clone", remoteDir, cachedDir], tempDir);
+			const newCommit = createCommit(
+				remoteDir,
+				"pi-extensions/session-breakdown.ts",
+				"// fresh",
+				"Refresh extension",
+			);
 
 			const executedCommands: string[] = [];
 			const managerWithInternals = packageManager as unknown as {
 				runCommand: (command: string, args: string[], options?: { cwd?: string }) => Promise<void>;
-				runCommandCapture: (command: string, args: string[], options?: { cwd?: string }) => Promise<string>;
 			};
-			managerWithInternals.runCommand = async (command, args) => {
+			managerWithInternals.runCommand = async (command, args, options) => {
 				executedCommands.push(`${command} ${args.join(" ")}`);
-				if (command === "git" && args[0] === "reset") {
-					writeFileSync(extensionFile, "// fresh");
+				if (command === "npm") {
+					return;
 				}
-			};
-			managerWithInternals.runCommandCapture = async (_command, args) => {
-				if (args[0] === "rev-parse" && args[1] === "HEAD") {
-					return "local-head";
+				const result = spawnSync(command, args, {
+					cwd: options?.cwd,
+					encoding: "utf-8",
+				});
+				if (result.status !== 0) {
+					throw new Error(`Command failed: ${command} ${args.join(" ")}\n${result.stderr}`);
 				}
-				if (args[0] === "rev-parse" && args[1] === "@{upstream}") {
-					return "remote-head";
-				}
-				if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") {
-					return "origin/main";
-				}
-				return "";
 			};
 
 			await packageManager.resolveExtensionSources([gitSource], { temporary: true });
@@ -276,7 +279,10 @@ describe("DefaultPackageManager git update", () => {
 			expect(executedCommands).toContain(
 				"git fetch --prune --no-tags origin +refs/heads/main:refs/remotes/origin/main",
 			);
+			expect(getCurrentCommit(cachedDir)).toBe(newCommit);
 			expect(getFileContent(cachedDir, "pi-extensions/session-breakdown.ts")).toBe("// fresh");
+			expect(git(["rev-parse", "--abbrev-ref", "HEAD"], cachedDir)).toBe("main");
+			expect(git(["rev-parse", "--abbrev-ref", "@{upstream}"], cachedDir)).toBe("origin/main");
 		});
 	});
 });
