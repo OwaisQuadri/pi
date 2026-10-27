@@ -243,6 +243,7 @@ export interface EditorTheme {
 export interface EditorOptions {
 	paddingX?: number;
 	autocompleteMaxVisible?: number;
+	onTerminalSubmit?: (text: string, submittedText: string) => void;
 }
 
 const SLASH_COMMAND_SELECT_LIST_LAYOUT: SelectListLayoutOptions = {
@@ -367,12 +368,14 @@ export class Editor implements Component, Focusable {
 	// Undo support
 	private undoStack = new UndoStack<EditorSnapshot>();
 
+	#onTerminalSubmit: EditorOptions["onTerminalSubmit"];
 	public onSubmit?: (text: string) => void;
 	public onChange?: (text: string) => void;
 	public disableSubmit: boolean = false;
 
 	constructor(tui: TUI, theme: EditorTheme, options: EditorOptions = {}) {
 		this.tui = tui;
+		this.#onTerminalSubmit = typeof options.onTerminalSubmit === "function" ? options.onTerminalSubmit : undefined;
 		this.theme = theme;
 		this.borderColor = theme.borderColor;
 		const paddingX = options.paddingX ?? 0;
@@ -898,7 +901,7 @@ export class Editor implements Component, Focusable {
 		) {
 			if (this.shouldSubmitOnBackslashEnter(data, kb)) {
 				this.handleBackspace();
-				this.submitValue();
+				this.submitValue(data);
 				return;
 			}
 			this.addNewLine();
@@ -918,7 +921,7 @@ export class Editor implements Component, Focusable {
 				return;
 			}
 
-			this.submitValue();
+			this.submitValue(data);
 			return;
 		}
 
@@ -1361,7 +1364,9 @@ export class Editor implements Component, Focusable {
 		return this.state.cursorCol > 0 && currentLine[this.state.cursorCol - 1] === "\\";
 	}
 
-	private submitValue(): void {
+	private submitValue(data: string): void {
+		const text = this.state.lines.join("\n");
+		const terminalText = this.tui.consumeTerminalInput?.(this, data, text);
 		this.cancelAutocomplete();
 		const result = this.expandPasteMarkers(this.state.lines.join("\n")).trim();
 
@@ -1373,6 +1378,7 @@ export class Editor implements Component, Focusable {
 		this.undoStack.clear();
 		this.lastAction = null;
 
+		if (terminalText !== undefined) this.#onTerminalSubmit?.(terminalText, result);
 		if (this.onChange) this.onChange("");
 		if (this.onSubmit) this.onSubmit(result);
 	}

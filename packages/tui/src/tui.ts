@@ -3,6 +3,7 @@
  */
 
 import { performance } from "node:perf_hooks";
+import { getKeybindings } from "./keybindings.ts";
 import { isKeyRelease, matchesKey } from "./keys.ts";
 import type { Terminal } from "./terminal.ts";
 import {
@@ -484,6 +485,7 @@ export interface TUI extends Component {
 	requestRender(force?: boolean): void;
 	addInputListener(listener: TuiInputListener): () => void;
 	removeInputListener(listener: TuiInputListener): void;
+	consumeTerminalInput?(component: Component, data: string, text: string): string | undefined;
 	onTerminalColorSchemeChange(listener: (scheme: TerminalColorScheme) => void): () => void;
 	setTerminalColorSchemeNotifications(enabled: boolean): void;
 	queryTerminalColors(options: {
@@ -508,6 +510,7 @@ export abstract class TuiBase extends Container implements TUI {
 	public terminal: Terminal;
 	private focusedComponent: Component | null = null;
 	private inputListeners = new Set<TuiInputListener>();
+	#terminalInput: { component: Component; data: string; text: string } | undefined;
 
 	/** Global callback for debug key (Shift+Ctrl+D). Called before input is forwarded to focused component. */
 	public onDebug?: () => void;
@@ -953,7 +956,7 @@ export abstract class TuiBase extends Container implements TUI {
 		process.on("exit", this.exitRestoreHandler);
 		this.beforeTerminalStart();
 		this.terminal.start(
-			(data) => this.handleTerminalInput(data),
+			(data) => this.#handleTerminalInput(data),
 			() => this.requestRender(),
 		);
 		this.afterTerminalStart();
@@ -974,6 +977,13 @@ export abstract class TuiBase extends Container implements TUI {
 
 	removeInputListener(listener: TuiInputListener): void {
 		this.inputListeners.delete(listener);
+	}
+
+	consumeTerminalInput(component: Component, data: string, text: string): string | undefined {
+		const input = this.#terminalInput;
+		this.#terminalInput = undefined;
+		if (!input || input.component !== component || input.data !== data || input.text !== text) return;
+		return input.text;
 	}
 
 	onTerminalColorSchemeChange(listener: (scheme: TerminalColorScheme) => void): () => void {
@@ -1078,7 +1088,16 @@ export abstract class TuiBase extends Container implements TUI {
 		}, delay);
 	}
 
-	private handleTerminalInput(data: string): void {
+	#handleTerminalInput(data: string): void {
+		const originalData = data;
+		const originalFocus = this.focusedComponent;
+		const keybindings = getKeybindings();
+		const isSubmitInput =
+			keybindings.matches(data, "tui.input.submit") || keybindings.matches(data, "tui.input.newLine");
+		const originalText =
+			isSubmitInput && originalFocus && "getText" in originalFocus && typeof originalFocus.getText === "function"
+				? originalFocus.getText()
+				: undefined;
 		if (this.consumeTerminalColorResponse(data)) {
 			return;
 		}
@@ -1149,7 +1168,16 @@ export abstract class TuiBase extends Container implements TUI {
 			if (isKeyRelease(data) && !this.focusedComponent.wantsKeyRelease) {
 				return;
 			}
-			this.focusedComponent.handleInput(data);
+			const component = this.focusedComponent;
+			this.#terminalInput =
+				component === originalFocus && data === originalData && typeof originalText === "string"
+					? { component, data, text: originalText }
+					: undefined;
+			try {
+				component.handleInput?.(data);
+			} finally {
+				this.#terminalInput = undefined;
+			}
 			// Keyboard input is latency-sensitive. Avoid the throttled timer path,
 			// where even setTimeout(0) can take a full 16 ms tick on Windows.
 			this.requestImmediateRender();
