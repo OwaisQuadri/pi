@@ -15,6 +15,7 @@ import { type Theme, theme } from "../../modes/interactive/theme/theme.ts";
 import type { CacheWarmingAction } from "../cache-warmer.ts";
 import type { ResourceDiagnostic } from "../diagnostics.ts";
 import type { KeybindingsConfig } from "../keybindings.ts";
+import { revokeNativeMemoryConversationRunner } from "../memory-conversation.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { ScopedModel } from "../model-resolver.ts";
 import type { SessionManager } from "../session-manager.ts";
@@ -266,6 +267,7 @@ export async function emitSessionShutdownEvent(
 	extensionRunner: ExtensionRunner,
 	event: SessionShutdownEvent,
 ): Promise<boolean> {
+	revokeNativeMemoryConversationRunner(extensionRunner);
 	if (extensionRunner.hasHandlers("session_shutdown")) {
 		await extensionRunner.emit(event);
 		return true;
@@ -729,6 +731,7 @@ export class ExtensionRunner {
 	invalidate(
 		message = "This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
 	): void {
+		revokeNativeMemoryConversationRunner(this);
 		if (!this.staleMessage) {
 			this.staleMessage = message;
 			this.runtime.invalidate(message);

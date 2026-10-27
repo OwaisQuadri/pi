@@ -114,6 +114,7 @@ import {
 } from "./extensions/index.ts";
 import { type BeforeAgentStartTrigger, emitSessionShutdownEvent } from "./extensions/runner.ts";
 import { createToolNameMatcher, isMcpToolName } from "./mcp-servers.ts";
+import { bindNativeMemoryConversationRunner, MemoryConversationController } from "./memory-conversation.ts";
 import { type BashExecutionMessage, type CustomMessage, convertToLlm } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
@@ -423,6 +424,7 @@ export class AgentSession {
 
 	// Extension system
 	private _extensionRunner!: ExtensionRunner;
+	#memoryConversation = new MemoryConversationController();
 	private _turnIndex = 0;
 	private readonly _entryIdsByMessage = new WeakMap<object, string>();
 	private readonly _boundaryDispatchedMessages = new WeakSet<object>();
@@ -1410,6 +1412,7 @@ export class AgentSession {
 	 * Call this when completely done with the session.
 	 */
 	dispose(): void {
+		this.#memoryConversation.invalidate();
 		try {
 			this.abortRetry();
 			this.abortCompaction();
@@ -1438,6 +1441,7 @@ export class AgentSession {
 
 	/** Refresh the public finalized transcript from the canonical session projection. */
 	refreshContext(): void {
+		this.#memoryConversation.invalidate();
 		this._refreshFinalizedContext();
 	}
 
@@ -2826,6 +2830,7 @@ export class AgentSession {
 	 * @param customInstructions Optional instructions for the compaction summary
 	 */
 	async compact(customInstructions?: string): Promise<CompactionResult> {
+		this.#memoryConversation.invalidate();
 		await this.abort();
 		this._compactionAbortController = new AbortController();
 		this._emit({ type: "compaction_start", reason: "manual" });
@@ -3155,6 +3160,7 @@ export class AgentSession {
 	 * @returns Whether the post-run loop should call `agent.continue()`
 	 */
 	private async _runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<boolean> {
+		this.#memoryConversation.invalidate();
 		const model = this.model;
 		const settings = this.settingsManager.getCompactionSettings(model);
 		let abortController: AbortController | undefined;
@@ -3701,6 +3707,7 @@ export class AgentSession {
 			this.sessionManager,
 			new ModelRegistry(this._modelRuntime),
 		);
+		bindNativeMemoryConversationRunner(this._extensionRunner, this.#memoryConversation);
 		if (this._extensionRunnerRef) {
 			this._extensionRunnerRef.current = this._extensionRunner;
 		}
@@ -4034,6 +4041,7 @@ export class AgentSession {
 			);
 		}
 
+		this.#memoryConversation.invalidate();
 		const oldLeafId = this.sessionManager.getLeafId();
 
 		// No-op if already at target

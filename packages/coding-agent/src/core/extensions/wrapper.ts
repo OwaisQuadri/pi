@@ -6,6 +6,7 @@
  */
 
 import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { bindNativeMemoryConversationContext } from "../memory-conversation.ts";
 import { wrapToolDefinition } from "../tools/tool-definition-wrapper.ts";
 import type { ExtensionRunner } from "./runner.ts";
 import type { RegisteredTool } from "./types.ts";
@@ -15,9 +16,11 @@ import type { RegisteredTool } from "./types.ts";
  * Uses the runner's createToolContext() for consistent context across tools and event handlers.
  */
 export function wrapRegisteredTool(registeredTool: RegisteredTool, runner: ExtensionRunner): AgentTool {
-	return wrapToolDefinition(registeredTool.definition, (toolCallId, signal) =>
-		runner.createToolContext(toolCallId, signal),
-	);
+	return wrapToolDefinition(registeredTool.definition, (toolCallId, signal) => {
+		const context = runner.createToolContext(toolCallId, signal);
+		bindNativeMemoryConversationContext(context, runner, registeredTool.definition);
+		return context;
+	});
 }
 
 /**
