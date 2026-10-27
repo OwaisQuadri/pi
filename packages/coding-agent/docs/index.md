@@ -28,6 +28,8 @@ Use the [Quickstart customization chooser](quickstart.md#choose-how-to-customize
 - Use [RPC mode](rpc.md) to control a separate Pi process.
 - Use the [TypeScript SDK](sdk.md) to run Pi inside an application.
 
+The [memory conversation API](memory-conversation.md) is incomplete. It cannot authorize memory changes.
+
 ## Find reference and setup information
 
 Use the reference pages to look up [CLI options](cli.md), [settings](settings.md), [providers](providers.md), [keybindings](keybindings.md), and [environment variables](environment-variables.md).
