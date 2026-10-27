@@ -15,7 +15,9 @@ export function bindNativeMemoryConversationContext(context: object, runner: obj
 }
 
 export function revokeNativeMemoryConversationRunner(runner: object): void {
-	nativeRunners.get(runner)?.invalidate();
+	const controller = nativeRunners.get(runner);
+	nativeRunners.delete(runner);
+	controller?.invalidate();
 }
 
 export interface MemoryConversationProposal {
@@ -59,6 +61,7 @@ export class MemoryConversationController {
 	#reply: NativeInput | undefined;
 	#inputs = new WeakMap<object, NativeInput>();
 	#messages = new WeakMap<object, NativeInput>();
+	#activatedMessages = new WeakSet<object>();
 
 	bindView(view: NativeMemoryConversationView): (originalText: string, submittedText: string) => object | undefined {
 		this.invalidate();
@@ -85,7 +88,13 @@ export class MemoryConversationController {
 		if (typeof token !== "object" || token === null) return;
 		const input = this.#inputs.get(token);
 		this.#inputs.delete(token);
-		if (!input || input.submittedText !== submittedText || !this.#isCurrent(input.pending)) return;
+		if (
+			!input ||
+			this.#activatedMessages.has(message) ||
+			input.submittedText !== submittedText ||
+			!this.#isCurrent(input.pending)
+		)
+			return;
 		this.#messages.set(message, input);
 	}
 
@@ -93,6 +102,8 @@ export class MemoryConversationController {
 		this.#reply = undefined;
 		const input = this.#messages.get(message);
 		this.#messages.delete(message);
+		if (this.#activatedMessages.has(message)) return;
+		this.#activatedMessages.add(message);
 		if (input && this.#isCurrent(input.pending)) this.#reply = input;
 	}
 

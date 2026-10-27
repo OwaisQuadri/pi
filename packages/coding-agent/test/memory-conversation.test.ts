@@ -211,6 +211,33 @@ describe("MemoryConversationController native-state units", () => {
 		controller.activateInput(message);
 		expect(conversation.resolveReply(proposal.id)).toBeUndefined();
 	});
+
+	it("rejects reassociation of an activated message and consumes the new token", () => {
+		const { controller, observe, conversation } = createConversation();
+		conversation.present(proposal);
+		const message = {};
+		controller.associateInput(message, observe("Yes", "Yes"), "Yes");
+		controller.activateInput(message);
+		controller.activateInput({});
+		const token = observe("A new reply", "A new reply");
+		controller.associateInput(message, token, "A new reply");
+		controller.activateInput(message);
+		expect(conversation.resolveReply(proposal.id)).toBeUndefined();
+		const replay = {};
+		controller.associateInput(replay, token, "A new reply");
+		controller.activateInput(replay);
+		expect(conversation.resolveReply(proposal.id)).toBeUndefined();
+	});
+
+	it("does not upgrade an already active non-native message with a fresh token", () => {
+		const { controller, observe, conversation } = createConversation();
+		conversation.present(proposal);
+		const message = {};
+		controller.activateInput(message);
+		controller.associateInput(message, observe("Yes", "Yes"), "Yes");
+		controller.activateInput(message);
+		expect(conversation.resolveReply(proposal.id)).toBeUndefined();
+	});
 });
 
 describe("Native memory tool-context identity units", () => {
@@ -244,6 +271,28 @@ describe("Native memory tool-context identity units", () => {
 		const otherContext = {};
 		bindNativeMemoryConversationContext(otherContext, runner, {});
 		expect(getMemoryConversation(otherContext)?.resolveReply(proposal.id)).toBeUndefined();
+		expect(conversation?.resolveReply(proposal.id)?.originalText).toBe("Yes");
+	});
+
+	it("cannot mint fresh contexts through a revoked runner after view replacement", () => {
+		const { controller, owner } = createConversation();
+		const retiredRunner = {};
+		bindNativeMemoryConversationRunner(retiredRunner, controller);
+		revokeNativeMemoryConversationRunner(retiredRunner);
+		const observe = controller.bindView({ isActive: () => true, present: () => () => true });
+		const staleContext = {};
+		bindNativeMemoryConversationContext(staleContext, retiredRunner, owner);
+		expect(getMemoryConversation(staleContext)).toBeUndefined();
+		const replacementRunner = {};
+		const context = {};
+		bindNativeMemoryConversationRunner(replacementRunner, controller);
+		bindNativeMemoryConversationContext(context, replacementRunner, owner);
+		const conversation = getMemoryConversation(context);
+		expect(conversation?.present(proposal)).toEqual(proposal);
+		revokeNativeMemoryConversationRunner(retiredRunner);
+		const message = {};
+		controller.associateInput(message, observe("Yes", "Yes"), "Yes");
+		controller.activateInput(message);
 		expect(conversation?.resolveReply(proposal.id)?.originalText).toBe("Yes");
 	});
 
