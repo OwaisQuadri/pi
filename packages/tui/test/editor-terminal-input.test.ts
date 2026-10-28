@@ -1,18 +1,21 @@
 import assert from "node:assert/strict";
 import { describe, it, type TestContext } from "node:test";
-import { Editor } from "../src/components/editor.ts";
+import { Editor, type EditorOptions } from "../src/components/editor.ts";
 import { getKeybindings } from "../src/keybindings.ts";
 import { TuiMainScreen } from "../src/tui-main-screen.ts";
 import { defaultEditorTheme } from "./test-themes.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
-function createFixture(context: TestContext) {
+function createFixture(context: TestContext, onTerminalSubmit?: EditorOptions["onTerminalSubmit"]) {
 	const terminal = new VirtualTerminal();
 	const tui = new TuiMainScreen(terminal);
 	const observed: [string, string][] = [];
 	const submitted: string[] = [];
 	const editor = new Editor(tui, defaultEditorTheme, {
-		onTerminalSubmit: (text, submittedText) => observed.push([text, submittedText]),
+		onTerminalSubmit: (text, submittedText) => {
+			observed.push([text, submittedText]);
+			return onTerminalSubmit?.(text, submittedText);
+		},
 	});
 	editor.onSubmit = (text) => submitted.push(text);
 	tui.addChild(editor);
@@ -117,7 +120,10 @@ describe("Editor terminal submission origin", () => {
 		const { terminal, tui, editor, observed, submitted } = createFixture(context);
 		editor.setText("ordinary text");
 		const other = new Editor(tui, defaultEditorTheme, {
-			onTerminalSubmit: (text, submittedText) => observed.push([text, submittedText]),
+			onTerminalSubmit: (text, submittedText) => {
+				observed.push([text, submittedText]);
+				return undefined;
+			},
 		});
 		other.setText("approve");
 		other.onSubmit = (text) => submitted.push(text);
@@ -187,5 +193,107 @@ describe("Editor terminal submission origin", () => {
 		terminal.sendInput("\r");
 		assert.deepEqual(observed, [["approve", "approve"]]);
 		assert.equal(tui.consumeTerminalInput(editor, "\r", "approve"), undefined);
+	});
+
+	it("releases a native scope after synchronous submission", (context) => {
+		let scope: object | undefined;
+		let releaseCount = 0;
+		const fixture = createFixture(context, () => {
+			const current = {};
+			scope = current;
+			return () => {
+				releaseCount++;
+				if (scope === current) scope = undefined;
+			};
+		});
+		let claimed: object | undefined;
+		fixture.editor.onSubmit = () => {
+			claimed = scope;
+		};
+		fixture.editor.setText("approve");
+		fixture.terminal.sendInput("\r");
+		assert.notEqual(claimed, undefined);
+		assert.equal(scope, undefined);
+		assert.equal(releaseCount, 1);
+	});
+
+	it("releases a suppressed scope before an asynchronous forward", async (context) => {
+		let scope: object | undefined;
+		const fixture = createFixture(context, () => {
+			scope = {};
+			return () => {
+				scope = undefined;
+			};
+		});
+		let claimed: object | undefined = {};
+		fixture.editor.onSubmit = () => {
+			queueMicrotask(() => {
+				claimed = scope;
+			});
+		};
+		fixture.editor.setText("approve");
+		fixture.terminal.sendInput("\r");
+		assert.equal(scope, undefined);
+		await Promise.resolve();
+		assert.equal(claimed, undefined);
+	});
+
+	it("clears an outer scope before a nested programmatic submit", (context) => {
+		let scope: object | undefined;
+		const fixture = createFixture(context, () => {
+			scope = {};
+			return () => {
+				scope = undefined;
+			};
+		});
+		const claims: Array<object | undefined> = [];
+		fixture.editor.onSubmit = () => {
+			claims.push(scope);
+		};
+		fixture.editor.setText("approve");
+		let isReentered = false;
+		fixture.editor.onChange = () => {
+			if (isReentered) return;
+			isReentered = true;
+			fixture.editor.setText("nested");
+			fixture.editor.handleInput("\r");
+		};
+		fixture.terminal.sendInput("\r");
+		assert.deepEqual(claims, [undefined, undefined]);
+		assert.equal(scope, undefined);
+	});
+
+	it("does not observe a backslash frame retired by a reentrant change callback", (context) => {
+		const fixture = createFixture(context);
+		const bindings = getKeybindings();
+		const previous = bindings.getUserBindings();
+		bindings.setUserBindings({ ...previous, "tui.input.submit": "shift+enter", "tui.input.newLine": "enter" });
+		context.after(() => bindings.setUserBindings(previous));
+		fixture.editor.setText("approve\\");
+		let isReentered = false;
+		fixture.editor.onChange = () => {
+			if (isReentered) return;
+			isReentered = true;
+			fixture.editor.setText("nested");
+			fixture.editor.handleInput("\r");
+		};
+		fixture.terminal.sendInput("\r");
+		assert.deepEqual(fixture.observed, []);
+	});
+
+	it("releases a native scope when a public change callback throws", (context) => {
+		let scope: object | undefined;
+		const fixture = createFixture(context, () => {
+			scope = {};
+			return () => {
+				scope = undefined;
+			};
+		});
+		fixture.editor.setText("approve");
+		fixture.editor.onChange = () => {
+			throw new Error("Synthetic change failure");
+		};
+		assert.throws(() => fixture.terminal.sendInput("\r"), /Synthetic change failure/);
+		assert.equal(scope, undefined);
 	});
 });

@@ -114,7 +114,13 @@ import {
 } from "./extensions/index.ts";
 import { type BeforeAgentStartTrigger, emitSessionShutdownEvent } from "./extensions/runner.ts";
 import { createToolNameMatcher, isMcpToolName } from "./mcp-servers.ts";
-import { bindNativeMemoryConversationRunner, MemoryConversationController } from "./memory-conversation.ts";
+import {
+	bindNativeMemoryConversationRunner,
+	discardNativeMemoryConversationInput,
+	MemoryConversationController,
+	type NativeMemoryConversationInput,
+	takeNativeMemoryConversationInput,
+} from "./memory-conversation.ts";
 import { type BashExecutionMessage, type CustomMessage, convertToLlm } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
@@ -1103,6 +1109,16 @@ export class AgentSession {
 
 	/** Internal handler for agent events - shared by subscribe and reconnect */
 	private _handleAgentEvent = async (event: AgentEvent): Promise<void> => {
+		if (event.type === "message_start" && event.message.role === "user") {
+			this.#memoryConversation.activateInput(event.message);
+		} else if (
+			event.type === "agent_end" ||
+			(event.type === "message_end" &&
+				event.message.role === "assistant" &&
+				(event.message.stopReason === "error" || event.message.stopReason === "aborted"))
+		) {
+			this.#memoryConversation.clearInputs();
+		}
 		// An abort requested while the run was starting, e.g. during before_agent_start, stops it
 		// here. agent_start is awaited before the first request.
 		if (event.type === "agent_start" && this._agentRunAbortRequested) this.agent.abort();
@@ -1874,13 +1890,18 @@ export class AgentSession {
 	 * starting another, and an abort requested meanwhile aborts the run as soon as it exists.
 	 * @param onStarted Called once the run's messages are prepared, before the first request.
 	 */
-	private async _startRun(trigger: BeforeAgentStartTrigger, onStarted?: () => void): Promise<void> {
+	private async _startRun(
+		trigger: BeforeAgentStartTrigger,
+		onStarted?: () => void,
+		nativeInput?: NativeMemoryConversationInput,
+	): Promise<void> {
 		this._isAgentRunActive = true;
 		this._agentRunAbortRequested = false;
 		let messages: AgentMessage[];
 		try {
-			messages = await this._prepareRun(trigger);
+			messages = await this._prepareRun(trigger, nativeInput);
 		} catch (error) {
+			this.#memoryConversation.clearInputs();
 			this._isAgentRunActive = false;
 			this._flushPendingBashMessages();
 			this._flushPendingCustomMessages();
@@ -1912,6 +1933,7 @@ export class AgentSession {
 				await this.agent.continue();
 			}
 		} finally {
+			this.#memoryConversation.clearInputs();
 			if (this._agentRunAbortRequested) this._finishCancelledRetry();
 			this._failedResponse = undefined;
 			this._runSystemPromptOptions = undefined;
@@ -1927,7 +1949,10 @@ export class AgentSession {
 	 * message followed by pending nextTurn messages (consumed here) and handler messages, with a
 	 * system patch first when the prompt changed.
 	 */
-	private async _prepareRun(trigger: BeforeAgentStartTrigger): Promise<AgentMessage[]> {
+	private async _prepareRun(
+		trigger: BeforeAgentStartTrigger,
+		nativeInput?: NativeMemoryConversationInput,
+	): Promise<AgentMessage[]> {
 		// Check if we need to compact before sending (catches aborted responses).
 		// The starting message is sent below, so do not call agent.continue() here.
 		const lastAssistant = this._findLastAssistantMessage();
@@ -1954,11 +1979,14 @@ export class AgentSession {
 			const normalized = await this._normalizePromptImages(trigger.images);
 			const text =
 				normalized.hints.length > 0 ? `${trigger.prompt}\n\n${normalized.hints.join("\n")}` : trigger.prompt;
-			messages.push({
+			const message: AgentMessage = {
 				role: "user",
 				content: [{ type: "text", text }, ...normalized.images],
 				timestamp: Date.now(),
-			});
+			};
+			if (nativeInput)
+				this.#memoryConversation.associateInput(message, nativeInput.token, nativeInput.submittedText);
+			messages.push(message);
 		}
 		// Inject any pending "nextTurn" messages as context alongside the starting message
 		messages.push(...this._pendingNextTurnMessages);
@@ -2094,88 +2122,99 @@ export class AgentSession {
 	 * @throws Error if no model selected or no API key available (when not streaming)
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<void> {
+		const nativeInput = this.#takeMemoryInput(options);
 		if (this._isEmittingAgentSettled) {
-			this._deferredSettledActions.push(async () => await this.prompt(text, options));
+			this._deferredSettledActions.push(async () => await this.#prompt(text, options, nativeInput));
 			return;
 		}
-		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
-		const preflightResult = options?.preflightResult;
-		// Handle extension commands first (execute immediately, even during streaming)
-		// Extension commands manage their own LLM interaction via pi.sendMessage()
-		if (expandPromptTemplates && text.startsWith("/")) {
-			const handled = await this._tryExecuteExtensionCommand(text);
-			if (handled) {
-				// Extension command executed, no prompt to send
+		await this.#prompt(text, options, nativeInput);
+	}
+
+	async #prompt(
+		text: string,
+		options: PromptOptions | undefined,
+		nativeInput: NativeMemoryConversationInput | undefined,
+	): Promise<void> {
+		try {
+			const isPromptExpansionEnabled = options?.expandPromptTemplates ?? true;
+			const preflightResult = options?.preflightResult;
+			if (isPromptExpansionEnabled && text.startsWith("/")) {
+				const handled = await this._tryExecuteExtensionCommand(text);
+				if (handled) {
+					preflightResult?.("handled");
+					return;
+				}
+			}
+
+			if (this._compactionAbortController !== undefined) {
+				throw new Error(
+					"Cannot submit a prompt while compaction is in progress. Wait for compaction to finish and retry.",
+				);
+			}
+
+			const processedInput = await this._runInputHandlers(
+				text,
+				options?.images,
+				options?.source ?? "interactive",
+				this.isStreaming ? options?.streamingBehavior : undefined,
+			);
+			if (!processedInput) {
 				preflightResult?.("handled");
 				return;
 			}
-		}
+			const { text: currentText, images: currentImages } = processedInput;
 
-		if (this._compactionAbortController !== undefined) {
-			throw new Error(
-				"Cannot submit a prompt while compaction is in progress. Wait for compaction to finish and retry.",
+			let expandedText = currentText;
+			if (isPromptExpansionEnabled) {
+				expandedText = this._expandSkillCommand(expandedText);
+				expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
+			}
+
+			if (this.isStreaming) {
+				if (!options?.streamingBehavior) {
+					throw new Error(
+						"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
+					);
+				}
+				if (options.streamingBehavior === "followUp") {
+					await this._queueFollowUp(expandedText, currentImages, nativeInput);
+				} else {
+					await this._queueSteer(expandedText, currentImages, nativeInput);
+				}
+				preflightResult?.("queued");
+				return;
+			}
+
+			if (!this.model) {
+				throw new Error(formatNoModelSelectedMessage());
+			}
+
+			const isAuthConfigured =
+				this._modelRuntime.hasConfiguredAuth(this.model.provider) ||
+				(await this._modelRuntime.checkAuth(this.model.provider)) !== undefined;
+			if (!isAuthConfigured) {
+				const isOAuth = this._modelRuntime.isUsingOAuth(this.model.provider);
+				if (isOAuth) {
+					throw new Error(
+						`Authentication failed for "${this.model.provider}". ` +
+							`Credentials may have expired or network is unavailable. ` +
+							`Run '/login ${this.model.provider}' to re-authenticate.`,
+					);
+				}
+				throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
+			}
+
+			await this._startRun(
+				{ messageType: "user", prompt: expandedText, images: currentImages },
+				() => preflightResult?.("started"),
+				nativeInput,
 			);
+		} catch (error) {
+			this.#memoryConversation.clearInputs();
+			throw error;
+		} finally {
+			discardNativeMemoryConversationInput(nativeInput);
 		}
-
-		// Emit input event for extension interception (before skill/template expansion)
-		const processedInput = await this._runInputHandlers(
-			text,
-			options?.images,
-			options?.source ?? "interactive",
-			this.isStreaming ? options?.streamingBehavior : undefined,
-		);
-		if (!processedInput) {
-			preflightResult?.("handled");
-			return;
-		}
-		const { text: currentText, images: currentImages } = processedInput;
-
-		// Expand skill commands (/skill:name args) and prompt templates (/template args)
-		let expandedText = currentText;
-		if (expandPromptTemplates) {
-			expandedText = this._expandSkillCommand(expandedText);
-			expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
-		}
-
-		// If streaming, queue via steer() or followUp() based on option
-		if (this.isStreaming) {
-			if (!options?.streamingBehavior) {
-				throw new Error(
-					"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
-				);
-			}
-			if (options.streamingBehavior === "followUp") {
-				await this._queueFollowUp(expandedText, currentImages);
-			} else {
-				await this._queueSteer(expandedText, currentImages);
-			}
-			preflightResult?.("queued");
-			return;
-		}
-
-		// Validate model
-		if (!this.model) {
-			throw new Error(formatNoModelSelectedMessage());
-		}
-
-		const hasConfiguredAuth =
-			this._modelRuntime.hasConfiguredAuth(this.model.provider) ||
-			(await this._modelRuntime.checkAuth(this.model.provider)) !== undefined;
-		if (!hasConfiguredAuth) {
-			const isOAuth = this._modelRuntime.isUsingOAuth(this.model.provider);
-			if (isOAuth) {
-				throw new Error(
-					`Authentication failed for "${this.model.provider}". ` +
-						`Credentials may have expired or network is unavailable. ` +
-						`Run '/login ${this.model.provider}' to re-authenticate.`,
-				);
-			}
-			throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
-		}
-
-		await this._startRun({ messageType: "user", prompt: expandedText, images: currentImages }, () =>
-			preflightResult?.("started"),
-		);
 	}
 
 	/**
@@ -2238,33 +2277,48 @@ export class AgentSession {
 		}
 	}
 
+	#takeMemoryInput(options: object | undefined): NativeMemoryConversationInput | undefined {
+		const input = takeNativeMemoryConversationInput(options);
+		if (input?.controller === this.#memoryConversation) return input;
+		discardNativeMemoryConversationInput(input);
+		return undefined;
+	}
+
 	private async _queueUserInput(
 		text: string,
 		images: ImageContent[] | undefined,
 		behavior: "steer" | "followUp",
 		source: InputSource,
+		nativeInput?: NativeMemoryConversationInput,
 	): Promise<QueuedInputDisposition> {
-		if (text.startsWith("/")) {
-			this._throwIfExtensionCommand(text);
+		try {
+			if (text.startsWith("/")) {
+				this._throwIfExtensionCommand(text);
+			}
+
+			const processedInput = await this._runInputHandlers(
+				text,
+				images,
+				source,
+				this.isStreaming ? behavior : undefined,
+			);
+			if (!processedInput) return "handled";
+
+			let expandedText = this._expandSkillCommand(processedInput.text);
+			expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
+
+			if (behavior === "steer") {
+				await this._queueSteer(expandedText, processedInput.images, nativeInput);
+			} else {
+				await this._queueFollowUp(expandedText, processedInput.images, nativeInput);
+			}
+			return "queued";
+		} catch (error) {
+			this.#memoryConversation.clearInputs();
+			throw error;
+		} finally {
+			discardNativeMemoryConversationInput(nativeInput);
 		}
-
-		const processedInput = await this._runInputHandlers(
-			text,
-			images,
-			source,
-			this.isStreaming ? behavior : undefined,
-		);
-		if (!processedInput) return "handled";
-
-		let expandedText = this._expandSkillCommand(processedInput.text);
-		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
-
-		if (behavior === "steer") {
-			await this._queueSteer(expandedText, processedInput.images);
-		} else {
-			await this._queueFollowUp(expandedText, processedInput.images);
-		}
-		return "queued";
 	}
 
 	/**
@@ -2281,7 +2335,13 @@ export class AgentSession {
 		images?: ImageContent[],
 		options?: { source?: InputSource },
 	): Promise<QueuedInputDisposition> {
-		return this._queueUserInput(text, images, "steer", options?.source ?? "interactive");
+		return this._queueUserInput(
+			text,
+			images,
+			"steer",
+			options?.source ?? "interactive",
+			this.#takeMemoryInput(options),
+		);
 	}
 
 	/**
@@ -2297,37 +2357,51 @@ export class AgentSession {
 		images?: ImageContent[],
 		options?: { source?: InputSource },
 	): Promise<QueuedInputDisposition> {
-		return this._queueUserInput(text, images, "followUp", options?.source ?? "interactive");
+		return this._queueUserInput(
+			text,
+			images,
+			"followUp",
+			options?.source ?? "interactive",
+			this.#takeMemoryInput(options),
+		);
 	}
 
 	/**
 	 * Internal: Queue a steering message (already expanded, no extension command check).
 	 */
-	private async _queueSteer(text: string, images?: ImageContent[]): Promise<void> {
+	private async _queueSteer(
+		text: string,
+		images?: ImageContent[],
+		nativeInput?: NativeMemoryConversationInput,
+	): Promise<void> {
 		this._steeringMessages.push(text);
-		this._emitQueueUpdate();
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 		if (images) {
 			content.push(...images);
 		}
-		this.agent.steer({
-			role: "user",
-			content,
-			timestamp: Date.now(),
-		});
+		const message: AgentMessage = { role: "user", content, timestamp: Date.now() };
+		if (nativeInput) this.#memoryConversation.associateInput(message, nativeInput.token, nativeInput.submittedText);
+		this.agent.steer(message);
+		this._emitQueueUpdate();
 	}
 
 	/**
 	 * Internal: Queue a follow-up message (already expanded, no extension command check).
 	 */
-	private async _queueFollowUp(text: string, images?: ImageContent[]): Promise<void> {
+	private async _queueFollowUp(
+		text: string,
+		images?: ImageContent[],
+		nativeInput?: NativeMemoryConversationInput,
+	): Promise<void> {
 		this._followUpMessages.push(text);
-		this._emitQueueUpdate();
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 		if (images) {
 			content.push(...images);
 		}
-		this.agent.followUp({ role: "user", content, timestamp: Date.now() });
+		const message: AgentMessage = { role: "user", content, timestamp: Date.now() };
+		if (nativeInput) this.#memoryConversation.associateInput(message, nativeInput.token, nativeInput.submittedText);
+		this.agent.followUp(message);
+		this._emitQueueUpdate();
 	}
 
 	/**
@@ -2468,6 +2542,7 @@ export class AgentSession {
 	 * @returns Object with steering and followUp arrays
 	 */
 	clearQueue(): { steering: string[]; followUp: string[] } {
+		this.#memoryConversation.clearInputs();
 		const steering = [...this._steeringMessages];
 		const followUp = [...this._followUpMessages];
 		this._steeringMessages = [];
@@ -2500,6 +2575,7 @@ export class AgentSession {
 	 * Abort current operation and wait for agent to become idle.
 	 */
 	async abort(): Promise<void> {
+		this.#memoryConversation.clearInputs();
 		if (this._isAgentRunActive) {
 			this._agentRunAbortRequested = true;
 		}

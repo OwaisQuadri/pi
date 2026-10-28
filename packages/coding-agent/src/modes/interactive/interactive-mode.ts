@@ -66,7 +66,12 @@ import {
 	getDocsPath,
 	VERSION,
 } from "../../config.ts";
-import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.ts";
+import {
+	type AgentSession,
+	type AgentSessionEvent,
+	type PromptOptions,
+	parseSkillBlock,
+} from "../../core/agent-session.ts";
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
 import type { AgentSessionRuntimeDiagnostic } from "../../core/agent-session-services.ts";
 import {
@@ -98,8 +103,12 @@ import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/htt
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
 import type { McpHttpServerConfig } from "../../core/mcp-servers.ts";
 import {
+	bindNativeMemoryConversationInput,
 	bindNativeMemoryConversationView,
+	discardNativeMemoryConversationInput,
 	invalidateNativeMemoryConversationView,
+	type NativeMemoryConversationInput,
+	takeNativeMemoryConversationInput,
 	unbindNativeMemoryConversationView,
 } from "../../core/memory-conversation.ts";
 import { createCompactionSummaryMessage, createCustomMessage } from "../../core/messages.ts";
@@ -274,8 +283,12 @@ class BuiltInHeader extends ExpandableText {
 
 type ExtensionDialogComponent = Component & { dispose?(): void };
 
-type CompactionQueuedMessage = {
+interface InteractiveInput {
 	text: string;
+	nativeInput?: NativeMemoryConversationInput;
+}
+
+type CompactionQueuedMessage = InteractiveInput & {
 	mode: "steer" | "followUp";
 };
 
@@ -463,6 +476,10 @@ export class InteractiveMode {
 	private renderer: TuiMainScreen | TuiAltScreen;
 	#renderMemoryFrame: () => void;
 	#memoryViewOwner: object | undefined;
+	#observeMemoryInput:
+		| ((originalText: string, submittedText: string) => NativeMemoryConversationInput | undefined)
+		| undefined;
+	#editorMemoryInput: NativeMemoryConversationInput | undefined;
 	#memoryViewTransitions = new Set<object>();
 	private ui: TUI;
 	private mainScreenRenderState: TuiMainScreenRenderState | undefined;
@@ -489,8 +506,8 @@ export class InteractiveMode {
 	private keybindings: KeybindingsManager;
 	private version: string;
 	private isInitialized = false;
-	private onInputCallback?: (text: string) => void;
-	private pendingUserInputs: string[] = [];
+	#onInputCallback: ((input: InteractiveInput) => void) | undefined;
+	#pendingUserInputs: InteractiveInput[] = [];
 	private activeStatusIndicator: StatusIndicator | undefined = undefined;
 	private activeWorkingIndicatorEmbedded = false;
 	private readonly idleStatus = new IdleStatus();
@@ -555,7 +572,7 @@ export class InteractiveMode {
 	private retryEscapeHandler?: () => void;
 
 	// Messages queued while compaction is running
-	private compactionQueuedMessages: CompactionQueuedMessage[] = [];
+	#compactionQueuedMessages: CompactionQueuedMessage[] = [];
 
 	// Shutdown state
 	private shutdownRequested = false;
@@ -663,6 +680,18 @@ export class InteractiveMode {
 			paddingX: editorPaddingX,
 			autocompleteMaxVisible,
 			embedWorkingStatus: true,
+			onTerminalSubmit: (originalText, submittedText) => {
+				discardNativeMemoryConversationInput(this.#editorMemoryInput);
+				this.#editorMemoryInput = undefined;
+				const input = this.#observeMemoryInput?.(originalText, submittedText);
+				if (!input) return;
+				this.#editorMemoryInput = input;
+				return () => {
+					if (this.#editorMemoryInput !== input) return;
+					this.#editorMemoryInput = undefined;
+					discardNativeMemoryConversationInput(input);
+				};
+			},
 		});
 		this.editor = this.defaultEditor;
 		this.editorContainer = new Container();
@@ -1269,9 +1298,9 @@ export class InteractiveMode {
 
 		// Main interactive loop
 		while (true) {
-			const userInput = await this.getUserInput();
+			const userInput = await this.#getUserInput();
 			try {
-				await this.session.prompt(userInput);
+				await this.#sendInput(userInput);
 			} catch (error: unknown) {
 				const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
 				this.showError(errorMessage);
@@ -2095,7 +2124,7 @@ export class InteractiveMode {
 			this.extensionDialogs.length === 0 &&
 			renderer.getFocusedComponent() === this.defaultEditor &&
 			!renderer.hasOverlayEntries;
-		bindNativeMemoryConversationView(
+		this.#observeMemoryInput = bindNativeMemoryConversationView(
 			runner,
 			viewOwner,
 			{
@@ -2133,6 +2162,40 @@ export class InteractiveMode {
 					this.#bindMemoryConversationView();
 			},
 		);
+	}
+
+	#takeEditorInput(text: string | undefined): InteractiveInput {
+		const nativeInput = this.#editorMemoryInput;
+		this.#editorMemoryInput = undefined;
+		if (text === undefined || nativeInput?.submittedText !== text) {
+			discardNativeMemoryConversationInput(nativeInput);
+			return { text: text ?? "" };
+		}
+		return { text, nativeInput };
+	}
+
+	async #sendInput(
+		input: InteractiveInput,
+		mode: "prompt" | "steer" | "followUp" = "prompt",
+		options: PromptOptions = {},
+	): Promise<void> {
+		const nativeInput = input.nativeInput;
+		delete input.nativeInput;
+		bindNativeMemoryConversationInput(options, nativeInput);
+		try {
+			if (mode === "prompt") await this.session.prompt(input.text, options);
+			else if (mode === "steer") await this.session.steer(input.text, undefined, options);
+			else await this.session.followUp(input.text, undefined, options);
+		} finally {
+			discardNativeMemoryConversationInput(takeNativeMemoryConversationInput(options));
+		}
+	}
+
+	#discardNativeInputs(inputs: readonly InteractiveInput[]): void {
+		for (const input of inputs) {
+			discardNativeMemoryConversationInput(input.nativeInput);
+			delete input.nativeInput;
+		}
 	}
 
 	private applyFullscreenScrollbarSetting(): void {
@@ -2303,7 +2366,8 @@ export class InteractiveMode {
 		this.loadedResourcesContainer.clear();
 		this.chatContainer.clear();
 		this.pendingMessagesContainer.clear();
-		this.compactionQueuedMessages = [];
+		this.#discardNativeInputs(this.#compactionQueuedMessages);
+		this.#compactionQueuedMessages = [];
 		this.streamingComponent = undefined;
 		this.streamingMessage = undefined;
 		this.pendingTools.clear();
@@ -3194,7 +3258,7 @@ export class InteractiveMode {
 			"app.message.copy",
 			() => void this.handleCopyCommand({ flashConfirmation: true, preferSelection: true }),
 		);
-		this.defaultEditor.onAction("app.message.followUp", () => this.handleFollowUp());
+		this.defaultEditor.onAction("app.message.followUp", (text) => this.handleFollowUp(text));
 		this.defaultEditor.onAction("app.message.dequeue", () => this.handleDequeue());
 		this.defaultEditor.onAction("app.session.new", () => this.handleClearCommand());
 		this.defaultEditor.onAction("app.session.tree", () => this.showTreeSelector());
@@ -3279,202 +3343,210 @@ export class InteractiveMode {
 
 	private setupEditorSubmitHandler(): void {
 		this.defaultEditor.onSubmit = async (text: string) => {
-			text = text.trim();
-			if (!text) return;
+			const input = this.#takeEditorInput(text);
+			try {
+				text = input.text.trim();
+				input.text = text;
+				if (!text) return;
 
-			// Handle commands
-			if (text === "/settings") {
-				this.showSettingsSelector();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/scoped-models") {
-				this.editor.setText("");
-				await this.showModelsSelector();
-				return;
-			}
-			if (text === "/model" || text.startsWith("/model ")) {
-				const searchTerm = text.startsWith("/model ") ? text.slice(7).trim() : undefined;
-				this.editor.setText("");
-				await this.handleModelCommand(searchTerm);
-				return;
-			}
-			if (text === "/thinking" || text.startsWith("/thinking ")) {
-				const searchTerm = text.startsWith("/thinking ") ? text.slice(10).trim() : undefined;
-				this.editor.setText("");
-				this.handleThinkingCommand(searchTerm);
-				return;
-			}
-			if (text === "/export" || text.startsWith("/export ")) {
-				await this.handleExportCommand(text);
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/import" || text.startsWith("/import ")) {
-				await this.handleImportCommand(text);
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/share") {
-				await this.handleShareCommand();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/bug" || text.startsWith("/bug ")) {
-				const hint = text.slice("/bug".length).trim();
-				this.editor.setText("");
-				await this.handleBugCommand(hint ? hint : undefined);
-				return;
-			}
-			if (text === "/copy") {
-				await this.handleCopyCommand();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/name" || text.startsWith("/name ")) {
-				this.handleNameCommand(text);
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/session") {
-				this.handleSessionCommand();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/changelog") {
-				this.handleChangelogCommand();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/hotkeys") {
-				this.handleHotkeysCommand();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/fork") {
-				this.showUserMessageSelector();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/clone") {
-				this.editor.setText("");
-				await this.handleCloneCommand();
-				return;
-			}
-			if (text === "/tree") {
-				this.showTreeSelector();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/trust") {
-				this.showTrustSelector();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/login" || text.startsWith("/login ")) {
-				const providerRef = text.startsWith("/login ") ? text.slice(7).trim() : undefined;
-				this.editor.setText("");
-				await this.handleLoginCommand(providerRef);
-				return;
-			}
-			if (text === "/logout") {
-				this.showOAuthSelector("logout");
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/new") {
-				this.editor.setText("");
-				await this.handleClearCommand();
-				return;
-			}
-			if (text === "/compact" || text.startsWith("/compact ")) {
-				const customInstructions = text.startsWith("/compact ") ? text.slice(9).trim() : undefined;
-				this.editor.setText("");
-				await this.handleCompactCommand(customInstructions);
-				return;
-			}
-			if (text === "/reload") {
-				this.editor.setText("");
-				await this.handleReloadCommand();
-				return;
-			}
-			if (text === "/debug") {
-				this.handleDebugCommand();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/arminsayshi") {
-				this.handleArminSaysHi();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/dementedelves") {
-				this.handleDementedDelves();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/resume") {
-				this.showSessionSelector();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/quit") {
-				this.editor.setText("");
-				await this.shutdown();
-				return;
-			}
-
-			// Handle bash command (! for normal, !! for excluded from context)
-			if (text.startsWith("!")) {
-				const isExcluded = text.startsWith("!!");
-				const command = isExcluded ? text.slice(2).trim() : text.slice(1).trim();
-				if (command) {
-					if (this.session.isBashRunning) {
-						this.showWarning("A bash command is already running. Press Esc to cancel it first.");
-						this.editor.setText(text);
-						return;
-					}
-					this.editor.addToHistory?.(text);
-					await this.handleBashCommand(command, isExcluded);
-					this.isBashMode = false;
-					this.updateEditorBorderColor();
+				// Handle commands
+				if (text === "/settings") {
+					this.showSettingsSelector();
+					this.editor.setText("");
 					return;
 				}
-			}
+				if (text === "/scoped-models") {
+					this.editor.setText("");
+					await this.showModelsSelector();
+					return;
+				}
+				if (text === "/model" || text.startsWith("/model ")) {
+					const searchTerm = text.startsWith("/model ") ? text.slice(7).trim() : undefined;
+					this.editor.setText("");
+					await this.handleModelCommand(searchTerm);
+					return;
+				}
+				if (text === "/thinking" || text.startsWith("/thinking ")) {
+					const searchTerm = text.startsWith("/thinking ") ? text.slice(10).trim() : undefined;
+					this.editor.setText("");
+					this.handleThinkingCommand(searchTerm);
+					return;
+				}
+				if (text === "/export" || text.startsWith("/export ")) {
+					await this.handleExportCommand(text);
+					this.editor.setText("");
+					return;
+				}
+				if (text === "/import" || text.startsWith("/import ")) {
+					await this.handleImportCommand(text);
+					this.editor.setText("");
+					return;
+				}
+				if (text === "/share") {
+					await this.handleShareCommand();
+					this.editor.setText("");
+					return;
+				}
+				if (text === "/bug" || text.startsWith("/bug ")) {
+					const hint = text.slice("/bug".length).trim();
+					this.editor.setText("");
+					await this.handleBugCommand(hint ? hint : undefined);
+					return;
+				}
+				if (text === "/copy") {
+					await this.handleCopyCommand();
+					this.editor.setText("");
+					return;
+				}
+				if (text === "/name" || text.startsWith("/name ")) {
+					this.handleNameCommand(text);
+					this.editor.setText("");
+					return;
+				}
+				if (text === "/session") {
+					this.handleSessionCommand();
+					this.editor.setText("");
+					return;
+				}
+				if (text === "/changelog") {
+					this.handleChangelogCommand();
+					this.editor.setText("");
+					return;
+				}
+				if (text === "/hotkeys") {
+					this.handleHotkeysCommand();
+					this.editor.setText("");
+					return;
+				}
+				if (text === "/fork") {
+					this.showUserMessageSelector();
+					this.editor.setText("");
+					return;
+				}
+				if (text === "/clone") {
+					this.editor.setText("");
+					await this.handleCloneCommand();
+					return;
+				}
+				if (text === "/tree") {
+					this.showTreeSelector();
+					this.editor.setText("");
+					return;
+				}
+				if (text === "/trust") {
+					this.showTrustSelector();
+					this.editor.setText("");
+					return;
+				}
+				if (text === "/login" || text.startsWith("/login ")) {
+					const providerRef = text.startsWith("/login ") ? text.slice(7).trim() : undefined;
+					this.editor.setText("");
+					await this.handleLoginCommand(providerRef);
+					return;
+				}
+				if (text === "/logout") {
+					this.showOAuthSelector("logout");
+					this.editor.setText("");
+					return;
+				}
+				if (text === "/new") {
+					this.editor.setText("");
+					await this.handleClearCommand();
+					return;
+				}
+				if (text === "/compact" || text.startsWith("/compact ")) {
+					const customInstructions = text.startsWith("/compact ") ? text.slice(9).trim() : undefined;
+					this.editor.setText("");
+					await this.handleCompactCommand(customInstructions);
+					return;
+				}
+				if (text === "/reload") {
+					this.editor.setText("");
+					await this.handleReloadCommand();
+					return;
+				}
+				if (text === "/debug") {
+					this.handleDebugCommand();
+					this.editor.setText("");
+					return;
+				}
+				if (text === "/arminsayshi") {
+					this.handleArminSaysHi();
+					this.editor.setText("");
+					return;
+				}
+				if (text === "/dementedelves") {
+					this.handleDementedDelves();
+					this.editor.setText("");
+					return;
+				}
+				if (text === "/resume") {
+					this.showSessionSelector();
+					this.editor.setText("");
+					return;
+				}
+				if (text === "/quit") {
+					this.editor.setText("");
+					await this.shutdown();
+					return;
+				}
 
-			// Queue input during compaction (extension commands execute immediately)
-			if (this.session.isCompacting) {
-				if (this.isExtensionCommand(text)) {
+				// Handle bash command (! for normal, !! for excluded from context)
+				if (text.startsWith("!")) {
+					const isExcluded = text.startsWith("!!");
+					const command = isExcluded ? text.slice(2).trim() : text.slice(1).trim();
+					if (command) {
+						if (this.session.isBashRunning) {
+							this.showWarning("A bash command is already running. Press Esc to cancel it first.");
+							this.editor.setText(text);
+							return;
+						}
+						this.editor.addToHistory?.(text);
+						await this.handleBashCommand(command, isExcluded);
+						this.isBashMode = false;
+						this.updateEditorBorderColor();
+						return;
+					}
+				}
+
+				// Queue input during compaction (extension commands execute immediately)
+				if (this.session.isCompacting) {
+					if (this.isExtensionCommand(text)) {
+						this.editor.addToHistory?.(text);
+						this.editor.setText("");
+						await this.session.prompt(text);
+					} else {
+						this.queueCompactionMessage(input, "steer");
+					}
+					return;
+				}
+
+				// If streaming, use prompt() with steer behavior
+				// This handles extension commands (execute immediately), prompt template expansion, and queueing
+				if (this.session.isStreaming) {
 					this.editor.addToHistory?.(text);
 					this.editor.setText("");
-					await this.session.prompt(text);
-				} else {
-					this.queueCompactionMessage(text, "steer");
+					await this.#sendInput(input, "prompt", { streamingBehavior: "steer" });
+					this.updatePendingMessagesDisplay();
+					this.ui.requestRender();
+					return;
 				}
-				return;
-			}
 
-			// If streaming, use prompt() with steer behavior
-			// This handles extension commands (execute immediately), prompt template expansion, and queueing
-			if (this.session.isStreaming) {
+				// Normal message submission
+				// First, move any pending bash components to chat
+				this.flushPendingBashComponents();
+
+				const queuedInput = { ...input };
+				delete input.nativeInput;
+				if (this.#onInputCallback) {
+					this.#onInputCallback(queuedInput);
+				} else {
+					this.#pendingUserInputs.push(queuedInput);
+				}
 				this.editor.addToHistory?.(text);
-				this.editor.setText("");
-				await this.session.prompt(text, { streamingBehavior: "steer" });
-				this.updatePendingMessagesDisplay();
-				this.ui.requestRender();
-				return;
+			} finally {
+				discardNativeMemoryConversationInput(input.nativeInput);
 			}
-
-			// Normal message submission
-			// First, move any pending bash components to chat
-			this.flushPendingBashComponents();
-
-			if (this.onInputCallback) {
-				this.onInputCallback(text);
-			} else {
-				this.pendingUserInputs.push(text);
-			}
-			this.editor.addToHistory?.(text);
 		};
 	}
 
@@ -4365,15 +4437,19 @@ export class InteractiveMode {
 	}
 
 	async getUserInput(): Promise<string> {
-		const queuedInput = this.pendingUserInputs.shift();
-		if (queuedInput !== undefined) {
-			return queuedInput;
-		}
+		const input = await this.#getUserInput();
+		discardNativeMemoryConversationInput(input.nativeInput);
+		delete input.nativeInput;
+		return input.text;
+	}
 
+	#getUserInput(): Promise<InteractiveInput> {
+		const input = this.#pendingUserInputs.shift();
+		if (input !== undefined) return Promise.resolve(input);
 		return new Promise((resolve) => {
-			this.onInputCallback = (text: string) => {
-				this.onInputCallback = undefined;
-				resolve(text);
+			this.#onInputCallback = (next) => {
+				this.#onInputCallback = undefined;
+				resolve(next);
 			};
 		});
 	}
@@ -4599,35 +4675,47 @@ export class InteractiveMode {
 		}
 	}
 
-	private async handleFollowUp(): Promise<void> {
-		const text = (this.editor.getExpandedText?.() ?? this.editor.getText()).trim();
-		if (!text) return;
-
-		// Queue input during compaction (extension commands execute immediately)
-		if (this.session.isCompacting) {
-			if (this.isExtensionCommand(text)) {
+	private async handleFollowUp(submittedText?: string): Promise<void> {
+		const input = this.#takeEditorInput(submittedText);
+		if (submittedText === undefined) input.text = (this.editor.getExpandedText?.() ?? this.editor.getText()).trim();
+		const text = input.text.trim();
+		input.text = text;
+		try {
+			if (!text) return;
+			if (this.session.isCompacting) {
+				if (this.isExtensionCommand(text)) {
+					this.editor.addToHistory?.(text);
+					this.editor.setText("");
+					await this.session.prompt(text);
+				} else {
+					this.queueCompactionMessage(input, "followUp");
+				}
+				return;
+			}
+			if (this.session.isStreaming) {
 				this.editor.addToHistory?.(text);
 				this.editor.setText("");
-				await this.session.prompt(text);
+				await this.#sendInput(input, "prompt", { streamingBehavior: "followUp" });
+				this.updatePendingMessagesDisplay();
+				this.ui.requestRender();
 			} else {
-				this.queueCompactionMessage(text, "followUp");
+				const onSubmit = this.editor.onSubmit;
+				if (!onSubmit) return;
+				this.editor.setText("");
+				const nativeInput = input.nativeInput;
+				delete input.nativeInput;
+				this.#editorMemoryInput = nativeInput;
+				try {
+					onSubmit(text);
+				} finally {
+					if (this.#editorMemoryInput === nativeInput) {
+						this.#editorMemoryInput = undefined;
+						discardNativeMemoryConversationInput(nativeInput);
+					}
+				}
 			}
-			return;
-		}
-
-		// Alt+Enter queues a follow-up message (waits until agent finishes)
-		// This handles extension commands (execute immediately), prompt template expansion, and queueing
-		if (this.session.isStreaming) {
-			this.editor.addToHistory?.(text);
-			this.editor.setText("");
-			await this.session.prompt(text, { streamingBehavior: "followUp" });
-			this.updatePendingMessagesDisplay();
-			this.ui.requestRender();
-		}
-		// If not streaming, Alt+Enter acts like regular Enter (trigger onSubmit)
-		else if (this.editor.onSubmit) {
-			this.editor.setText("");
-			this.editor.onSubmit(text);
+		} finally {
+			discardNativeMemoryConversationInput(input.nativeInput);
 		}
 	}
 
@@ -4822,11 +4910,11 @@ export class InteractiveMode {
 		return {
 			steering: [
 				...this.session.getSteeringMessages(),
-				...this.compactionQueuedMessages.filter((msg) => msg.mode === "steer").map((msg) => msg.text),
+				...this.#compactionQueuedMessages.filter((msg) => msg.mode === "steer").map((msg) => msg.text),
 			],
 			followUp: [
 				...this.session.getFollowUpMessages(),
-				...this.compactionQueuedMessages.filter((msg) => msg.mode === "followUp").map((msg) => msg.text),
+				...this.#compactionQueuedMessages.filter((msg) => msg.mode === "followUp").map((msg) => msg.text),
 			],
 		};
 	}
@@ -4836,14 +4924,15 @@ export class InteractiveMode {
 	 * Clears both session queue and compaction queue.
 	 */
 	private clearAllQueues(): { steering: string[]; followUp: string[] } {
+		this.#discardNativeInputs(this.#compactionQueuedMessages);
 		const { steering, followUp } = this.session.clearQueue();
-		const compactionSteering = this.compactionQueuedMessages
+		const compactionSteering = this.#compactionQueuedMessages
 			.filter((msg) => msg.mode === "steer")
 			.map((msg) => msg.text);
-		const compactionFollowUp = this.compactionQueuedMessages
+		const compactionFollowUp = this.#compactionQueuedMessages
 			.filter((msg) => msg.mode === "followUp")
 			.map((msg) => msg.text);
-		this.compactionQueuedMessages = [];
+		this.#compactionQueuedMessages = [];
 		return {
 			steering: [...steering, ...compactionSteering],
 			followUp: [...followUp, ...compactionFollowUp],
@@ -4890,9 +4979,11 @@ export class InteractiveMode {
 		return allQueued.length;
 	}
 
-	private queueCompactionMessage(text: string, mode: "steer" | "followUp"): void {
-		this.compactionQueuedMessages.push({ text, mode });
-		this.editor.addToHistory?.(text);
+	private queueCompactionMessage(input: InteractiveInput, mode: "steer" | "followUp"): void {
+		const message = { ...input, mode };
+		delete input.nativeInput;
+		this.#compactionQueuedMessages.push(message);
+		this.editor.addToHistory?.(input.text);
 		this.editor.setText("");
 		this.updatePendingMessagesDisplay();
 		this.showStatus("Queued message for after compaction");
@@ -4909,17 +5000,18 @@ export class InteractiveMode {
 	}
 
 	private async flushCompactionQueue(options?: { willRetry?: boolean }): Promise<void> {
-		if (this.compactionQueuedMessages.length === 0) {
+		if (this.#compactionQueuedMessages.length === 0) {
 			return;
 		}
 
-		const queuedMessages = [...this.compactionQueuedMessages];
-		this.compactionQueuedMessages = [];
+		const queuedMessages = [...this.#compactionQueuedMessages];
+		this.#compactionQueuedMessages = [];
 		this.updatePendingMessagesDisplay();
 
 		const restoreQueue = (error: unknown) => {
+			this.#discardNativeInputs(queuedMessages);
 			this.session.clearQueue();
-			this.compactionQueuedMessages = queuedMessages;
+			this.#compactionQueuedMessages = queuedMessages;
 			this.updatePendingMessagesDisplay();
 			this.showError(
 				`Failed to send queued message${queuedMessages.length > 1 ? "s" : ""}: ${
@@ -4933,11 +5025,11 @@ export class InteractiveMode {
 				// When retry is pending, queue messages for the retry turn
 				for (const message of queuedMessages) {
 					if (this.isExtensionCommand(message.text)) {
-						await this.session.prompt(message.text);
+						await this.#sendInput(message);
 					} else if (message.mode === "followUp") {
-						await this.session.followUp(message.text);
+						await this.#sendInput(message, "followUp");
 					} else {
-						await this.session.steer(message.text);
+						await this.#sendInput(message, "steer");
 					}
 				}
 				this.updatePendingMessagesDisplay();
@@ -4949,7 +5041,7 @@ export class InteractiveMode {
 			if (firstPromptIndex === -1) {
 				// All extension commands - execute them all
 				for (const message of queuedMessages) {
-					await this.session.prompt(message.text);
+					await this.#sendInput(message);
 				}
 				return;
 			}
@@ -4960,24 +5052,24 @@ export class InteractiveMode {
 			const rest = queuedMessages.slice(firstPromptIndex + 1);
 
 			for (const message of preCommands) {
-				await this.session.prompt(message.text);
+				await this.#sendInput(message);
 			}
 
 			// Start a prompt when idle, or queue it into a run still finishing compaction.
-			const promptPromise = this.session
-				.prompt(firstPrompt.text, { streamingBehavior: firstPrompt.mode })
-				.catch((error) => {
+			const promptPromise = this.#sendInput(firstPrompt, "prompt", { streamingBehavior: firstPrompt.mode }).catch(
+				(error) => {
 					restoreQueue(error);
-				});
+				},
+			);
 
 			// Queue remaining messages
 			for (const message of rest) {
 				if (this.isExtensionCommand(message.text)) {
-					await this.session.prompt(message.text);
+					await this.#sendInput(message);
 				} else if (message.mode === "followUp") {
-					await this.session.followUp(message.text);
+					await this.#sendInput(message, "followUp");
 				} else {
-					await this.session.steer(message.text);
+					await this.#sendInput(message, "steer");
 				}
 			}
 			this.updatePendingMessagesDisplay();
@@ -7230,6 +7322,11 @@ export class InteractiveMode {
 	stop(fullscreenExitOutput = this.settingsManager.getFullscreenExitOutput()): void {
 		if (#bindMemoryConversationView in this) {
 			const viewOwner = this.#memoryViewOwner;
+			this.#observeMemoryInput = undefined;
+			discardNativeMemoryConversationInput(this.#editorMemoryInput);
+			this.#editorMemoryInput = undefined;
+			this.#discardNativeInputs(this.#pendingUserInputs);
+			this.#discardNativeInputs(this.#compactionQueuedMessages);
 			this.#memoryViewOwner = undefined;
 			this.#memoryViewTransitions.clear();
 			unbindNativeMemoryConversationView(this.session.extensionRunner, viewOwner);
