@@ -3,6 +3,7 @@ const nativeRunners = new WeakMap<
 	{ controller: MemoryConversationController; viewOwner?: object; rebindView?: () => void }
 >();
 const nativeContexts = new WeakMap<object, MemoryConversation>();
+const nativePromptInputs = new WeakMap<object, NativeMemoryConversationInput>();
 
 export function getMemoryConversation(context: object): MemoryConversation | undefined {
 	return nativeContexts.get(context);
@@ -17,12 +18,16 @@ export function bindNativeMemoryConversationView(
 	viewOwner: object,
 	view: NativeMemoryConversationView,
 	rebindView: () => void,
-): ((originalText: string, submittedText: string) => object | undefined) | undefined {
+): ((originalText: string, submittedText: string) => NativeMemoryConversationInput | undefined) | undefined {
 	const binding = nativeRunners.get(runner);
 	if (!binding) return undefined;
 	binding.viewOwner = viewOwner;
 	binding.rebindView = rebindView;
-	return binding.controller.bindView(view);
+	const observe = binding.controller.bindView(view);
+	return (originalText, submittedText) => {
+		const token = observe(originalText, submittedText);
+		return token ? Object.freeze({ controller: binding.controller, token, submittedText }) : undefined;
+	};
 }
 
 export function invalidateNativeMemoryConversationView(runner: object, viewOwner: object | undefined): void {
@@ -50,6 +55,34 @@ export function revokeNativeMemoryConversationRunner(runner: object): void {
 	const binding = nativeRunners.get(runner);
 	nativeRunners.delete(runner);
 	binding?.controller.invalidate();
+}
+
+export interface NativeMemoryConversationInput {
+	readonly controller: MemoryConversationController;
+	readonly token: object;
+	readonly submittedText: string;
+}
+
+export function bindNativeMemoryConversationInput(
+	options: object,
+	input: NativeMemoryConversationInput | undefined,
+): void {
+	const previous = takeNativeMemoryConversationInput(options);
+	if (previous !== input) discardNativeMemoryConversationInput(previous);
+	if (input) nativePromptInputs.set(options, input);
+}
+
+export function takeNativeMemoryConversationInput(
+	options: object | undefined,
+): NativeMemoryConversationInput | undefined {
+	if (!options) return undefined;
+	const input = nativePromptInputs.get(options);
+	nativePromptInputs.delete(options);
+	return input;
+}
+
+export function discardNativeMemoryConversationInput(input: NativeMemoryConversationInput | undefined): void {
+	input?.controller.discardInput(input.token);
 }
 
 export interface MemoryConversationProposal {
@@ -138,6 +171,16 @@ export class MemoryConversationController {
 		)
 			return;
 		this.#messages.set(message, input);
+	}
+
+	discardInput(token: object): void {
+		this.#inputs.delete(token);
+	}
+
+	clearInputs(): void {
+		this.#reply = undefined;
+		this.#inputs = new WeakMap();
+		this.#messages = new WeakMap();
 	}
 
 	activateInput(message: object): void {
@@ -237,8 +280,6 @@ export class MemoryConversationController {
 
 	#clearProposal(): void {
 		this.#pending = undefined;
-		this.#reply = undefined;
-		this.#inputs = new WeakMap();
-		this.#messages = new WeakMap();
+		this.clearInputs();
 	}
 }

@@ -338,7 +338,8 @@ export class Agent {
 	/** Preview the messages selected for the next turn without consuming them. */
 	peekQueuedMessages(): AgentMessage[] {
 		const steering = this.steeringQueue.peek();
-		return steering.length > 0 ? steering : this.followUpQueue.peek();
+		const messages = steering.length > 0 ? steering : this.followUpQueue.peek();
+		return messages.map((message) => ({ ...message }));
 	}
 
 	/** Active abort signal for the current run, if any. */

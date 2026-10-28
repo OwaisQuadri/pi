@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
 	bindNativeMemoryConversationContext,
+	bindNativeMemoryConversationInput,
 	bindNativeMemoryConversationRunner,
+	bindNativeMemoryConversationView,
+	discardNativeMemoryConversationInput,
 	getMemoryConversation,
 	MemoryConversationController,
 	type NativeMemoryConversationView,
 	revokeNativeMemoryConversationRunner,
+	takeNativeMemoryConversationInput,
 } from "../src/core/memory-conversation.ts";
 
 const proposal = { id: "proposal-1", text: "Remember that the preferred example uses synthetic data." };
@@ -310,5 +314,88 @@ describe("Native memory tool-context identity units", () => {
 		revokeNativeMemoryConversationRunner(runner);
 		expect(conversation?.resolveReply(proposal.id)).toBeUndefined();
 		expect(conversation?.present(proposal)).toBeUndefined();
+	});
+});
+
+function createNativeOptionsConversation() {
+	const controller = new MemoryConversationController();
+	const runner = {};
+	bindNativeMemoryConversationRunner(runner, controller);
+	const observe = bindNativeMemoryConversationView(
+		runner,
+		{},
+		{ isActive: () => true, present: () => () => true },
+		() => {},
+	);
+	const conversation = controller.forTool({});
+	conversation.present(proposal);
+	return { controller, conversation, observe };
+}
+
+describe("native options identity units without a terminal", () => {
+	it("takes only the actual options identity once", () => {
+		const { controller, conversation, observe } = createNativeOptionsConversation();
+		const input = observe?.(" Yes ", "Yes");
+		const options = { source: "interactive" };
+		bindNativeMemoryConversationInput(options, input);
+		expect(takeNativeMemoryConversationInput({ ...options })).toBeUndefined();
+		expect(takeNativeMemoryConversationInput(options)).toBe(input);
+		expect(takeNativeMemoryConversationInput(options)).toBeUndefined();
+		const message = {};
+		controller.associateInput(message, input?.token, "Yes");
+		controller.activateInput(message);
+		expect(conversation.resolveReply(proposal.id)?.originalText).toBe(" Yes ");
+	});
+
+	it("discards a replaced options binding instead of retaining its token", () => {
+		const { controller, conversation, observe } = createNativeOptionsConversation();
+		const first = observe?.("First", "First");
+		const second = observe?.("Second", "Second");
+		const options = {};
+		bindNativeMemoryConversationInput(options, first);
+		bindNativeMemoryConversationInput(options, second);
+		const stale = {};
+		controller.associateInput(stale, first?.token, "First");
+		controller.activateInput(stale);
+		expect(conversation.resolveReply(proposal.id)).toBeUndefined();
+		expect(takeNativeMemoryConversationInput(options)).toBe(second);
+		const current = {};
+		controller.associateInput(current, second?.token, "Second");
+		controller.activateInput(current);
+		expect(conversation.resolveReply(proposal.id)?.originalText).toBe("Second");
+	});
+
+	it("does not activate a token discarded by an unused native caller", () => {
+		const { controller, conversation, observe } = createNativeOptionsConversation();
+		const input = observe?.("Yes", "Yes");
+		discardNativeMemoryConversationInput(input);
+		const message = {};
+		controller.associateInput(message, input?.token, "Yes");
+		controller.activateInput(message);
+		expect(conversation.resolveReply(proposal.id)).toBeUndefined();
+	});
+
+	it("clears input without reviving an already activated message or losing the proposal", () => {
+		const { controller, observe, conversation } = createConversation();
+		conversation.present(proposal);
+		const oldMessage = {};
+		controller.associateInput(oldMessage, observe("First", "First"), "First");
+		controller.activateInput(oldMessage);
+		controller.clearInputs();
+		const replayed = observe("Second", "Second");
+		controller.associateInput(oldMessage, replayed, "Second");
+		controller.activateInput(oldMessage);
+		expect(conversation.resolveReply(proposal.id)).toBeUndefined();
+		const message = {};
+		controller.associateInput(message, replayed, "Second");
+		controller.activateInput(message);
+		expect(conversation.resolveReply(proposal.id)).toBeUndefined();
+		controller.associateInput(message, observe("Third", "Third"), "Third");
+		controller.activateInput(message);
+		expect(conversation.resolveReply(proposal.id)).toBeUndefined();
+		const fresh = {};
+		controller.associateInput(fresh, observe("Fresh", "Fresh"), "Fresh");
+		controller.activateInput(fresh);
+		expect(conversation.resolveReply(proposal.id)?.originalText).toBe("Fresh");
 	});
 });

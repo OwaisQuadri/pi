@@ -243,7 +243,7 @@ export interface EditorTheme {
 export interface EditorOptions {
 	paddingX?: number;
 	autocompleteMaxVisible?: number;
-	onTerminalSubmit?: (text: string, submittedText: string) => void;
+	onTerminalSubmit?: (originalText: string, submittedText: string) => undefined | (() => void);
 }
 
 const SLASH_COMMAND_SELECT_LIST_LAYOUT: SelectListLayoutOptions = {
@@ -369,6 +369,7 @@ export class Editor implements Component, Focusable {
 	private undoStack = new UndoStack<EditorSnapshot>();
 
 	#onTerminalSubmit: EditorOptions["onTerminalSubmit"];
+	#terminalSubmitCleanup: (() => void) | undefined;
 	public onSubmit?: (text: string) => void;
 	public onChange?: (text: string) => void;
 	public disableSubmit: boolean = false;
@@ -1363,24 +1364,48 @@ export class Editor implements Component, Focusable {
 		return this.state.cursorCol > 0 && currentLine[this.state.cursorCol - 1] === "\\";
 	}
 
-	private submitValue(data: string, isBackslashSubmit = false): void {
-		const text = this.state.lines.join("\n");
-		const terminalText = this.tui.consumeTerminalInput?.(this, data, text);
-		if (isBackslashSubmit) this.handleBackspace();
-		this.cancelAutocomplete();
-		const result = this.expandPasteMarkers(this.state.lines.join("\n")).trim();
+	protected submitValue(data: string, isBackslashSubmit = false, submit?: (text: string) => void): void {
+		const previousCleanup = this.#terminalSubmitCleanup;
+		this.#terminalSubmitCleanup = undefined;
+		previousCleanup?.();
+		let isCurrent = true;
+		let observerCleanup: (() => void) | undefined;
+		const cleanup = () => {
+			isCurrent = false;
+			const release = observerCleanup;
+			observerCleanup = undefined;
+			release?.();
+		};
+		this.#terminalSubmitCleanup = cleanup;
+		try {
+			const text = this.state.lines.join("\n");
+			const terminalText = this.tui.consumeTerminalInput?.(this, data, text);
+			if (isBackslashSubmit) this.handleBackspace();
+			this.cancelAutocomplete();
+			const result = this.expandPasteMarkers(this.state.lines.join("\n")).trim();
 
-		this.state = { lines: [""], cursorLine: 0, cursorCol: 0 };
-		this.pastes.clear();
-		this.pasteCounter = 0;
-		this.exitHistoryBrowsing();
-		this.scrollOffset = 0;
-		this.undoStack.clear();
-		this.lastAction = null;
+			this.state = { lines: [""], cursorLine: 0, cursorCol: 0 };
+			this.pastes.clear();
+			this.pasteCounter = 0;
+			this.exitHistoryBrowsing();
+			this.scrollOffset = 0;
+			this.undoStack.clear();
+			this.lastAction = null;
 
-		if (terminalText !== undefined) this.#onTerminalSubmit?.(terminalText, result);
-		if (this.onChange) this.onChange("");
-		if (this.onSubmit) this.onSubmit(result);
+			if (terminalText !== undefined && isCurrent) {
+				const release = this.#onTerminalSubmit?.(terminalText, result);
+				if (typeof release === "function") {
+					if (isCurrent) observerCleanup = release;
+					else release();
+				}
+			}
+			if (this.onChange) this.onChange("");
+			if (submit) submit(result);
+			else if (this.onSubmit) this.onSubmit(result);
+		} finally {
+			if (this.#terminalSubmitCleanup === cleanup) this.#terminalSubmitCleanup = undefined;
+			cleanup();
+		}
 	}
 
 	private handleBackspace(): void {
