@@ -462,6 +462,7 @@ export class InteractiveMode {
 	private runtimeHost: AgentSessionRuntime;
 	private renderer: TuiMainScreen | TuiAltScreen;
 	#renderMemoryFrame: () => void;
+	#memoryViewOwner: object | undefined;
 	#memoryViewTransitions = new Set<object>();
 	private ui: TUI;
 	private mainScreenRenderState: TuiMainScreenRenderState | undefined;
@@ -892,7 +893,6 @@ export class InteractiveMode {
 	}
 
 	private stopInteractiveTui(fullscreenExitOutput: FullscreenExitOutput): void {
-		if (#bindMemoryConversationView in this) unbindNativeMemoryConversationView(this.session.extensionRunner);
 		if (this.renderer.mode === "fullscreen" && fullscreenExitOutput === "transcript") {
 			while (this.renderer.hasOverlayEntries) this.renderer.hideOverlay();
 			this.switchTuiMode("regular", false, false);
@@ -916,7 +916,8 @@ export class InteractiveMode {
 			this.mainScreenRenderState = previousUi.captureRenderState();
 		}
 
-		if (#bindMemoryConversationView in this) invalidateNativeMemoryConversationView(this.session.extensionRunner);
+		if (#bindMemoryConversationView in this)
+			invalidateNativeMemoryConversationView(this.session.extensionRunner, this.#memoryViewOwner);
 		previousUi.stop({ preserveScreen: true });
 		previousUi.setFocus(null);
 		previousUi.clear();
@@ -959,6 +960,7 @@ export class InteractiveMode {
 
 	async init(): Promise<void> {
 		if (this.isInitialized) return;
+		if (#bindMemoryConversationView in this) this.#memoryViewOwner ??= {};
 
 		this.registerSignalHandlers();
 
@@ -2030,7 +2032,7 @@ export class InteractiveMode {
 					}
 
 					if (#bindMemoryConversationView in this)
-						invalidateNativeMemoryConversationView(this.session.extensionRunner);
+						invalidateNativeMemoryConversationView(this.session.extensionRunner, this.#memoryViewOwner);
 					this.chatContainer.clear();
 					this.renderInitialMessages();
 					if (result.editorText && !this.editor.getText().trim()) {
@@ -2069,7 +2071,8 @@ export class InteractiveMode {
 	}
 
 	#bindMemoryConversationView(): void {
-		if (!this.isInitialized || this.isShuttingDown) return;
+		const viewOwner = this.#memoryViewOwner;
+		if (!viewOwner || !this.isInitialized || this.isShuttingDown) return;
 		const session = this.session;
 		const runner = session.extensionRunner;
 		const renderer = this.renderer;
@@ -2078,6 +2081,7 @@ export class InteractiveMode {
 		const chat = this.chatContainer;
 		const isActive = () =>
 			isLifecycleCurrent() &&
+			this.#memoryViewOwner === viewOwner &&
 			this.isInitialized &&
 			!this.isShuttingDown &&
 			this.session === session &&
@@ -2093,6 +2097,7 @@ export class InteractiveMode {
 			!renderer.hasOverlayEntries;
 		bindNativeMemoryConversationView(
 			runner,
+			viewOwner,
 			{
 				isActive,
 				present: (proposal) => {
@@ -2124,7 +2129,8 @@ export class InteractiveMode {
 				},
 			},
 			() => {
-				if (this.session === session && session.extensionRunner === runner) this.#bindMemoryConversationView();
+				if (this.#memoryViewOwner === viewOwner && this.session === session && session.extensionRunner === runner)
+					this.#bindMemoryConversationView();
 			},
 		);
 	}
@@ -2292,7 +2298,8 @@ export class InteractiveMode {
 	}
 
 	private renderCurrentSessionState(): void {
-		if (#bindMemoryConversationView in this) invalidateNativeMemoryConversationView(this.session.extensionRunner);
+		if (#bindMemoryConversationView in this)
+			invalidateNativeMemoryConversationView(this.session.extensionRunner, this.#memoryViewOwner);
 		this.loadedResourcesContainer.clear();
 		this.chatContainer.clear();
 		this.pendingMessagesContainer.clear();
@@ -2536,7 +2543,7 @@ export class InteractiveMode {
 
 	private resetExtensionUI(): void {
 		if (#bindMemoryConversationView in this) {
-			invalidateNativeMemoryConversationView(this.session.extensionRunner);
+			invalidateNativeMemoryConversationView(this.session.extensionRunner, this.#memoryViewOwner);
 			this.#memoryViewTransitions.clear();
 		}
 		if (this.extensionDialogs.length > 0) {
@@ -2778,7 +2785,8 @@ export class InteractiveMode {
 	 * and dialogs opened from inside another dialog (for example a confirm from a custom component) work.
 	 */
 	private pushExtensionDialog(component: ExtensionDialogComponent, blocked?: BlockedStatus): void {
-		if (#bindMemoryConversationView in this) invalidateNativeMemoryConversationView(this.session.extensionRunner);
+		if (#bindMemoryConversationView in this)
+			invalidateNativeMemoryConversationView(this.session.extensionRunner, this.#memoryViewOwner);
 		this.disposeActiveSelector();
 		this.extensionDialogs.push({ component, blocked });
 		this.showTopExtensionDialog();
@@ -2926,7 +2934,7 @@ export class InteractiveMode {
 		const transition = {};
 		if (isNative) {
 			this.#memoryViewTransitions.add(transition);
-			invalidateNativeMemoryConversationView(this.session.extensionRunner);
+			invalidateNativeMemoryConversationView(this.session.extensionRunner, this.#memoryViewOwner);
 		}
 		try {
 			const currentText = this.editor.getText();
@@ -3032,7 +3040,7 @@ export class InteractiveMode {
 		const transition = {};
 		if (isNative) {
 			this.#memoryViewTransitions.add(transition);
-			invalidateNativeMemoryConversationView(this.session.extensionRunner);
+			invalidateNativeMemoryConversationView(this.session.extensionRunner, this.#memoryViewOwner);
 		}
 		try {
 			const savedText = this.editor.getText();
@@ -3537,7 +3545,7 @@ export class InteractiveMode {
 					const entries = this.sessionManager.buildContextEntries();
 					if (entries[0]?.id !== event.entry.id) break;
 					if (#bindMemoryConversationView in this)
-						invalidateNativeMemoryConversationView(this.session.extensionRunner);
+						invalidateNativeMemoryConversationView(this.session.extensionRunner, this.#memoryViewOwner);
 					this.chatContainer.clear();
 					const branch = this.sessionManager.getBranch();
 					const compactionIndex = branch.findIndex((entry) => entry.id === event.entry.id);
@@ -3785,7 +3793,7 @@ export class InteractiveMode {
 						throw new Error("Completed compaction is missing from the session context");
 					}
 					if (#bindMemoryConversationView in this)
-						invalidateNativeMemoryConversationView(this.session.extensionRunner);
+						invalidateNativeMemoryConversationView(this.session.extensionRunner, this.#memoryViewOwner);
 					this.chatContainer.clear();
 					// The latest compaction is prepended for model context; append it below at its chronological position.
 					this.renderSessionEntries(entries.slice(1));
@@ -4371,7 +4379,8 @@ export class InteractiveMode {
 	}
 
 	private rebuildChatFromMessages(): void {
-		if (#bindMemoryConversationView in this) invalidateNativeMemoryConversationView(this.session.extensionRunner);
+		if (#bindMemoryConversationView in this)
+			invalidateNativeMemoryConversationView(this.session.extensionRunner, this.#memoryViewOwner);
 		this.chatContainer.clear();
 		this.renderSessionEntries(this.sessionManager.buildContextEntries());
 	}
@@ -4555,7 +4564,8 @@ export class InteractiveMode {
 			return;
 		}
 
-		if (#bindMemoryConversationView in this) invalidateNativeMemoryConversationView(this.session.extensionRunner);
+		if (#bindMemoryConversationView in this)
+			invalidateNativeMemoryConversationView(this.session.extensionRunner, this.#memoryViewOwner);
 
 		// Keep the event loop alive while suspended. Without this, stopping the TUI
 		// can leave Node with no ref'ed handles, causing the process to exit on fg
@@ -4711,7 +4721,8 @@ export class InteractiveMode {
 	}
 
 	private async handleOpenExternalEditor(): Promise<void> {
-		if (#bindMemoryConversationView in this) invalidateNativeMemoryConversationView(this.session.extensionRunner);
+		if (#bindMemoryConversationView in this)
+			invalidateNativeMemoryConversationView(this.session.extensionRunner, this.#memoryViewOwner);
 		const editorCmd = this.settingsManager.getExternalEditorCommand();
 		const content = this.editor.getExpandedText?.() ?? this.editor.getText();
 		this.ui.stop();
@@ -5014,7 +5025,8 @@ export class InteractiveMode {
 			this.editorContainer.addChild(this.editor);
 			this.ui.setFocus(this.editor);
 		};
-		if (#bindMemoryConversationView in this) invalidateNativeMemoryConversationView(this.session.extensionRunner);
+		if (#bindMemoryConversationView in this)
+			invalidateNativeMemoryConversationView(this.session.extensionRunner, this.#memoryViewOwner);
 		const created = create(done);
 		dispose = created.dispose;
 		this.disposeActiveSelector();
@@ -5787,7 +5799,7 @@ export class InteractiveMode {
 
 						// Update UI
 						if (#bindMemoryConversationView in this)
-							invalidateNativeMemoryConversationView(this.session.extensionRunner);
+							invalidateNativeMemoryConversationView(this.session.extensionRunner, this.#memoryViewOwner);
 						this.chatContainer.clear();
 						this.renderInitialMessages();
 						if (result.editorText && !this.editor.getText().trim()) {
@@ -5999,7 +6011,8 @@ export class InteractiveMode {
 
 	/** `onBack` reopens the selector the login was started from when the user cancels it. */
 	private async startProviderLogin(providerOption: AuthSelectorProvider, onBack?: () => void): Promise<void> {
-		if (#bindMemoryConversationView in this) invalidateNativeMemoryConversationView(this.session.extensionRunner);
+		if (#bindMemoryConversationView in this)
+			invalidateNativeMemoryConversationView(this.session.extensionRunner, this.#memoryViewOwner);
 		if (providerOption.authType === "oauth") {
 			await this.showLoginDialog(providerOption.id, providerOption.name, onBack);
 		} else if (providerOption.method?.login) {
@@ -7216,8 +7229,10 @@ export class InteractiveMode {
 
 	stop(fullscreenExitOutput = this.settingsManager.getFullscreenExitOutput()): void {
 		if (#bindMemoryConversationView in this) {
+			const viewOwner = this.#memoryViewOwner;
+			this.#memoryViewOwner = undefined;
 			this.#memoryViewTransitions.clear();
-			unbindNativeMemoryConversationView(this.session.extensionRunner);
+			unbindNativeMemoryConversationView(this.session.extensionRunner, viewOwner);
 		}
 		this.disposeActiveSelector();
 		if (this.settingsManager.getShowTerminalProgress()) {
