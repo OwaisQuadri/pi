@@ -158,6 +158,7 @@ export {
 	type Component,
 	Container,
 	CURSOR_MARKER,
+	captureTuiLifecycle,
 	compositeTuiLine,
 	type Focusable,
 	isFocusable,
