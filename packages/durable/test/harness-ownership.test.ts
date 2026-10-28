@@ -311,26 +311,67 @@ describe("ownership", () => {
 		await harness.close(context);
 	});
 
-	it("tracks ownership chains deeper than the call stack", async () => {
+	it("tracks ownership chains deeper than the call stack", async ({ onTestFailed }) => {
+		const started = performance.now();
+		const milestones: Record<string, number> = {};
+		const progress = {
+			phase: "opening",
+			lastCreatedLink: -1,
+			runCountAtLastMilestone: 0,
+			topStatus: "unobserved",
+			leafOutcome: "unobserved",
+		};
+		let currentHarness: Harness | undefined;
+		onTestFailed(async () => {
+			console.error("Deep ownership diagnostic", {
+				...progress,
+				milestones,
+				elapsedMs: performance.now() - started,
+			});
+			await currentHarness?.close(context);
+		});
+		const mark = (phase: string) => {
+			progress.phase = phase;
+			progress.runCountAtLastMilestone = runs.size;
+			milestones[phase] = performance.now() - started;
+		};
 		const { harness, root } = await openHarness();
+		currentHarness = harness;
+		mark("opened");
 		// 20,000 tasks, each owning the next, created in one commit above a live leaf; they end top-down and hold.
 		const depth = 20_000;
+		mark("creating");
 		const { top, leaf } = await root.commit(async (tx) => {
 			const top = await tx.createTask(Hold, { name: "top" }, { ownership: { kind: "conversation" } });
 			let owner = top;
 			for (let n = 0; n < depth; n++) {
 				owner = await tx.createTask(Hold, { name: `link${n}` }, { ownership: { kind: "task", taskId: owner } });
+				progress.lastCreatedLink = n;
 			}
 			const leaf = await tx.createTask(Hold, { name: "leaf" }, { ownership: { kind: "task", taskId: owner } });
 			return { top, leaf };
 		}, context);
+		mark("created");
 		for (let n = 0; n < depth; n++) open(`link${n}`, "completed");
 		open("top", "completed");
-		await waitUntil(async () => (await status(harness, top)).status === "completing");
+		mark("awaiting-top-hold");
+		await waitUntil(async () => {
+			progress.topStatus = (await status(harness, top)).status;
+			return progress.topStatus === "completing";
+		});
+		mark("top-held");
 		open("leaf", "completed");
-		expect((await harness.waitForTask(leaf, context)).state.outcome.status).toBe("completed");
-		expect((await harness.waitForTask(top, context)).state.outcome.status).toBe("completed");
+		mark("awaiting-leaf");
+		progress.leafOutcome = (await harness.waitForTask(leaf, context)).state.outcome.status;
+		expect(progress.leafOutcome).toBe("completed");
+		mark("leaf-completed");
+		const topState = (await harness.waitForTask(top, context)).state;
+		progress.topStatus = topState.status;
+		expect(topState.outcome.status).toBe("completed");
+		mark("top-completed");
+		mark("closing");
 		await harness.close(context);
+		mark("closed");
 	}, 60_000);
 
 	it("holds an owner for work a commit creates below ended tasks loaded from storage", async () => {
