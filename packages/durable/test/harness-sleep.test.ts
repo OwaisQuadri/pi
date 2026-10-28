@@ -10,7 +10,7 @@ import {
 	type TaskId,
 	type Wake,
 } from "@earendil-works/pi-durable";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { openNodeSqliteStorage } from "../src/storage/sqlite/node.ts";
 import { context, flush } from "./session-support.ts";
 import { aborted, abortedWith, completed, eventually, openTasks } from "./task-support.ts";
@@ -85,6 +85,52 @@ async function settle(): Promise<void> {
 }
 
 describe("sleeping tasks", () => {
+	for (const isSleeping of [false, true]) {
+		it(
+			isSleeping
+				? "retains the future sleep deadline while another task is active"
+				: "does not scan live records for repeated active wakes without sleepers",
+			async () => {
+				const Active = defineTask<null, { phase: "run" }, null>({
+					name: "test.active-wake",
+					version: 1,
+					initial: () => ({ phase: "run" }),
+					phases: { run: (_task, runtime) => aborted(runtime.signal) },
+					abort: async () => {},
+				});
+				const Nap = napTask(1_000);
+				const { harness } = await openTasks(new MemoryStorage(), [Active, Nap], { now: () => 1_000 });
+				try {
+					const root = await harness.root(context);
+					const active = await root.commit(
+						(tx) => tx.createTask(Active, null, { ownership: { kind: "conversation" } }),
+						context,
+					);
+					const sleeper = isSleeping ? await startNap(harness, Nap) : undefined;
+					harness.resume();
+					await eventually(async () => (await stateOf(harness, active))?.status === "running");
+					if (sleeper !== undefined) {
+						await eventually(async () => (await stateOf(harness, sleeper))?.status === "sleeping");
+					}
+					const wakes: Wake[] = [];
+					let scans = 0;
+					const values = vi.spyOn(Map.prototype, "values");
+					try {
+						for (let count = 0; count < 3; count++) wakes.push(harness.wake());
+						scans = values.mock.calls.length;
+					} finally {
+						values.mockRestore();
+					}
+					const expected = isSleeping ? { active: true, at: 2_000 } : { active: true };
+					expect(wakes).toEqual([expected, expected, expected]);
+					if (!isSleeping) expect(scans).toBe(0);
+				} finally {
+					await harness.close(context);
+				}
+			},
+		);
+	}
+
 	it("sleeps without an invocation and resumes at its checkpoint once due", async () => {
 		let clock = 1_000;
 		const wakes: Wake[] = [];
