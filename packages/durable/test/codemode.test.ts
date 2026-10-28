@@ -7,6 +7,8 @@ import { type CodemodeRun, CodemodeSandbox } from "@earendil-works/pi-codemode";
 import {
 	defineTool,
 	type Harness,
+	type SettledSubmissionRecord,
+	type SubmissionId,
 	type TaskId,
 	type ToolRegistration,
 	ToolResultEntry,
@@ -181,17 +183,55 @@ async function restart(
 ) {
 	const path = await sqlitePath();
 	chat.setup.faux.setResponses([script(code), DONE]);
-	let opened = await openChat(await openNodeSqliteStorage(path), chat.setup);
-	const id = (await opened.root.submit({ type: "input", content: "go" }, context)).id;
-	await chat.holds.reached.promise;
-	await beforeClose(opened.harness, await scriptTask(opened.harness));
-	await opened.harness.close(context);
+	const initial = await openChat(await openNodeSqliteStorage(path), chat.setup);
+	let id: SubmissionId;
+	try {
+		const submission = await initial.root.submit({ type: "input", content: "go" }, context);
+		id = submission.id;
+		const terminal = deferred<SettledSubmissionRecord>();
+		const unsubscribe = initial.harness.subscribeCommits((publication) => {
+			for (const change of publication.changes) {
+				if (
+					change.type === "submission" &&
+					change.value.id === id &&
+					(change.value.status === "done" || change.value.status === "unanswered")
+				) {
+					terminal.resolve(change.value);
+				}
+			}
+		});
+		try {
+			const status = await submission.status(context);
+			if (status.status === "done" || status.status === "unanswered") terminal.resolve(status);
+			const ended = await Promise.race([terminal.promise, chat.holds.reached.promise]);
+			if (ended !== undefined) {
+				throw new Error(
+					`Initial submission ${ended.id} ended with status ${ended.status} before the restart checkpoint: ${JSON.stringify(
+						{
+							submission: ended,
+							results: (await allEntries(initial.root)).filter((entry) => ToolResultEntry.is(entry)),
+						},
+					)}`,
+				);
+			}
+			await beforeClose(initial.harness, await scriptTask(initial.harness));
+		} finally {
+			unsubscribe();
+		}
+	} finally {
+		await initial.harness.close(context);
+	}
 	chat.holds.block = false;
-	opened = await openChat(await openNodeSqliteStorage(path), chat.setup);
-	await between(opened.harness, await scriptTask(opened.harness));
-	opened.harness.resume();
-	expect((await (await opened.harness.submission(id, context))!.wait(context)).status).toBe("done");
-	return { ...opened, result: await resultText(chat.setup, opened.root) };
+	const opened = await openChat(await openNodeSqliteStorage(path), chat.setup);
+	try {
+		await between(opened.harness, await scriptTask(opened.harness));
+		opened.harness.resume();
+		expect((await (await opened.harness.submission(id, context))!.wait(context)).status).toBe("done");
+		return { ...opened, result: await resultText(chat.setup, opened.root) };
+	} catch (error) {
+		await opened.harness.close(context);
+		throw error;
+	}
 }
 
 describe("durable code mode", () => {
@@ -838,6 +878,36 @@ describe("durable code mode", () => {
 		}
 	});
 
+	it("fails a restart promptly when the initial script ends before the checkpoint", async () => {
+		const chat = codemodeChat();
+		await expect(restart(chat, `throw new Error("before checkpoint");`)).rejects.toThrow(
+			/status done before the restart checkpoint:[\s\S]*Error: before checkpoint/,
+		);
+		expect(chat.holds.runs).toBe(0);
+		expect(chat.vm.starts).toBe(1);
+	});
+
+	it("closes the owned restart Harness when setup or recovery fails", async () => {
+		for (const phase of ["beforeClose", "between"] as const) {
+			const chat = codemodeChat();
+			const failure = new Error(`failed ${phase}`);
+			let owned: Harness | undefined;
+			const fail = async (harness: Harness) => {
+				owned = harness;
+				throw failure;
+			};
+			await expect(
+				restart(
+					chat,
+					`await tools.hold({});`,
+					phase === "between" ? fail : undefined,
+					phase === "beforeClose" ? fail : undefined,
+				),
+			).rejects.toBe(failure);
+			await expect(owned!.closed).resolves.toEqual({ reason: "closed" });
+		}
+	});
+
 	it("times a script out across a restart, without admitting new calls", async () => {
 		const chat = codemodeChat();
 		const { harness, result } = await restart(
@@ -846,11 +916,14 @@ describe("durable code mode", () => {
 			await tools.hold({}); await tools.echo({ text: "late" });`,
 			() => new Promise((resolve) => setTimeout(resolve, 400)),
 		);
-		expect(result.isError).toBe(true);
-		expect(result.text).toContain("deadline passed");
-		expect(chat.echo.size).toBe(0);
-		expect(chat.vm.starts).toBe(1);
-		await harness.close(context);
+		try {
+			expect(result.isError).toBe(true);
+			expect(result.text).toContain("deadline passed");
+			expect(chat.echo.size).toBe(0);
+			expect(chat.vm.starts).toBe(1);
+		} finally {
+			await harness.close(context);
+		}
 	});
 
 	it("returns a decided outcome after a restart without running the script again", async () => {
