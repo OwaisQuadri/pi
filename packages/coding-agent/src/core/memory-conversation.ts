@@ -1,4 +1,7 @@
-const nativeRunners = new WeakMap<object, { controller: MemoryConversationController; rebindView?: () => void }>();
+const nativeRunners = new WeakMap<
+	object,
+	{ controller: MemoryConversationController; viewOwner?: object; rebindView?: () => void }
+>();
 const nativeContexts = new WeakMap<object, MemoryConversation>();
 
 export function getMemoryConversation(context: object): MemoryConversation | undefined {
@@ -11,22 +14,26 @@ export function bindNativeMemoryConversationRunner(runner: object, controller: M
 
 export function bindNativeMemoryConversationView(
 	runner: object,
+	viewOwner: object,
 	view: NativeMemoryConversationView,
 	rebindView: () => void,
 ): ((originalText: string, submittedText: string) => object | undefined) | undefined {
 	const binding = nativeRunners.get(runner);
 	if (!binding) return undefined;
+	binding.viewOwner = viewOwner;
 	binding.rebindView = rebindView;
 	return binding.controller.bindView(view);
 }
 
-export function invalidateNativeMemoryConversationView(runner: object): void {
-	nativeRunners.get(runner)?.controller.invalidate();
+export function invalidateNativeMemoryConversationView(runner: object, viewOwner: object | undefined): void {
+	const binding = nativeRunners.get(runner);
+	if (viewOwner && binding?.viewOwner === viewOwner) binding.controller.invalidate();
 }
 
-export function unbindNativeMemoryConversationView(runner: object): void {
+export function unbindNativeMemoryConversationView(runner: object, viewOwner: object | undefined): void {
 	const binding = nativeRunners.get(runner);
-	if (!binding) return;
+	if (!viewOwner || binding?.viewOwner !== viewOwner) return;
+	delete binding.viewOwner;
 	delete binding.rebindView;
 	binding.controller.invalidate();
 }

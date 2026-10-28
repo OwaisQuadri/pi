@@ -64,12 +64,7 @@ async function createFixture() {
 	});
 	const terminal = new VirtualTerminal(100, 30);
 	const mode = new InteractiveMode(runtime, { terminal });
-	let isStopped = false;
-	const stop = () => {
-		if (isStopped) return;
-		isStopped = true;
-		mode.stop();
-	};
+	const stop = () => mode.stop();
 	cleanups.push(() => {
 		try {
 			stop();
@@ -89,6 +84,7 @@ async function createFixture() {
 			renderer: TUI & { getFocusedComponent(): Component | null };
 			editorContainer: Container;
 			resetExtensionUI(): void;
+			disposeActiveSelector(): void;
 			startProviderLogin(provider: AuthSelectorProvider): Promise<void>;
 		},
 		facadeForRebuild() {
@@ -410,6 +406,35 @@ describe("owned native memory transcript view", () => {
 		expect(current.present({ id: "current", text: "The current view remains owned" })).toBeDefined();
 	});
 
+	it.each([false, true])("keeps replacement ownership after old cleanup throws=%s", async (isThrowingCleanup) => {
+		const fixture = await createFixture();
+		await fixture.mode.init();
+		await fixture.present("Original native host");
+		const oldUI = fixture.ui;
+		const cleanup = vi.spyOn(fixture.nativeHost, "disposeActiveSelector");
+		try {
+			if (isThrowingCleanup) {
+				cleanup.mockImplementationOnce(() => {
+					throw new Error("Fixture cleanup failed");
+				});
+				expect(() => fixture.mode.stop()).toThrow("Fixture cleanup failed");
+			} else fixture.mode.stop();
+			const replacement = new InteractiveMode(fixture.runtime, { terminal: new VirtualTerminal(100, 30) });
+			cleanups.push(() => replacement.stop());
+			await replacement.init();
+			expect(await fixture.present("Replacement native host", "replacement")).toBeDefined();
+			const current = fixture.facade;
+			oldUI.setEditorComponent(undefined);
+			expect(current.present({ id: "after-reset", text: "Replacement after stale UI reset" })).toBeDefined();
+			fixture.mode.stop();
+			expect(current.present({ id: "after-stop", text: "Replacement after repeated stop" })).toBeDefined();
+			fixture.harness.session.refreshContext();
+			expect(await fixture.present("Replacement still rebuilds", "fresh")).toBeDefined();
+		} finally {
+			cleanup.mockRestore();
+		}
+	});
+
 	it("does not rebuild a retired interactive host", async () => {
 		const fixture = await createFixture();
 		await fixture.mode.init();
@@ -425,11 +450,12 @@ describe("native view registry lifetime", () => {
 	it("rebuilds before minting a context and clears the callback on unbind", () => {
 		const runner = {};
 		const owner = {};
+		const viewOwner = {};
 		const controller = new MemoryConversationController();
 		const view = { isActive: () => true, present: () => () => true };
 		let rebindCount = 0;
 		const bind = () => {
-			bindNativeMemoryConversationView(runner, view, () => {
+			bindNativeMemoryConversationView(runner, viewOwner, view, () => {
 				rebindCount++;
 				bind();
 			});
@@ -441,7 +467,7 @@ describe("native view registry lifetime", () => {
 		bindNativeMemoryConversationContext(current, runner, owner);
 		expect(rebindCount).toBe(1);
 		expect(getMemoryConversation(current)?.present({ id: "current", text: "Current" })).toBeDefined();
-		unbindNativeMemoryConversationView(runner);
+		unbindNativeMemoryConversationView(runner, viewOwner);
 		const afterUnbind = {};
 		bindNativeMemoryConversationContext(afterUnbind, runner, owner);
 		expect(rebindCount).toBe(1);
@@ -453,7 +479,7 @@ describe("native view registry lifetime", () => {
 		const runner = {};
 		const controller = new MemoryConversationController();
 		bindNativeMemoryConversationRunner(runner, controller);
-		bindNativeMemoryConversationView(runner, { isActive: () => true, present: () => () => true }, () =>
+		bindNativeMemoryConversationView(runner, {}, { isActive: () => true, present: () => () => true }, () =>
 			revokeNativeMemoryConversationRunner(runner),
 		);
 		controller.invalidate();
