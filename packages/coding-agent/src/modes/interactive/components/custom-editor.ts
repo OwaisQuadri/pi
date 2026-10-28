@@ -85,6 +85,10 @@ export class CustomEditor extends Editor {
 		this.actionHandlers.set(action, handler);
 	}
 
+	override isSubmitInput(data: string): boolean {
+		return this.keybindings.matches(data, "app.message.followUp") || super.isSubmitInput(data);
+	}
+
 	handleInput(data: string): void {
 		// Check extension-registered shortcuts first
 		if (this.onExtensionShortcut?.(data)) {

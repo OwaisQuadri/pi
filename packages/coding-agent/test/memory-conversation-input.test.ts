@@ -5,6 +5,7 @@ import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
 import { ENV_AGENT_DIR } from "../src/config.ts";
 import type { AgentSessionEvent } from "../src/core/agent-session.ts";
 import { AgentSessionRuntime, type AgentSessionServices } from "../src/core/agent-session-runtime.ts";
+import { type KeybindingsManager, useWindowsKeybindings } from "../src/core/keybindings.ts";
 import { getMemoryConversation, type MemoryConversationReply } from "../src/core/memory-conversation.ts";
 import type { InlineExtension } from "../src/index.ts";
 import type { CustomEditor } from "../src/modes/interactive/components/custom-editor.ts";
@@ -12,6 +13,7 @@ import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { createHarness, getUserTexts } from "./suite/harness.ts";
 
 const cleanups: Array<() => void> = [];
+const nativeFollowUpInput = useWindowsKeybindings() ? "\x11" : "\x1b\r";
 type FlushOptions = Partial<Pick<Extract<AgentSessionEvent, { type: "compaction_end" }>, "willRetry">>;
 
 afterEach(() => {
@@ -66,6 +68,7 @@ async function createFixture(extraExtension?: InlineExtension) {
 	const mode = new InteractiveMode(runtime, { terminal });
 	const host = mode as unknown as {
 		defaultEditor: CustomEditor;
+		keybindings: KeybindingsManager;
 		getAllQueuedMessages(): { steering: string[]; followUp: string[] };
 		flushCompactionQueue(options?: FlushOptions): Promise<void>;
 		showError(text: string): void;
@@ -220,15 +223,22 @@ describe("native memory input transport", () => {
 		expect(fixture.replies).toEqual([undefined]);
 	});
 
-	it("does not trust a programmatic editor submit", async () => {
+	it.each(["\r", nativeFollowUpInput, "\x15"])("does not trust programmatic editor submission (%j)", async (key) => {
 		const fixture = await createFixture();
-		fixture.harness.setResponses(fixture.responses());
-		await fixture.present();
-		fixture.host.defaultEditor.setText("Yes");
-		fixture.host.defaultEditor.handleInput("\r");
-		fixture.startLoop();
-		await fixture.completeReply();
-		expect(fixture.replies).toEqual([undefined]);
+		const previous = fixture.host.keybindings.getUserBindings();
+		try {
+			if (key === "\x15")
+				fixture.host.keybindings.setUserBindings({ ...previous, "app.message.followUp": "ctrl+u" });
+			fixture.harness.setResponses(fixture.responses());
+			await fixture.present();
+			fixture.host.defaultEditor.setText("Yes");
+			fixture.host.defaultEditor.handleInput(key);
+			fixture.startLoop();
+			await fixture.completeReply();
+			expect(fixture.replies).toEqual([undefined]);
+		} finally {
+			fixture.host.keybindings.setUserBindings(previous);
+		}
 	});
 
 	it("does not turn a serialized interactive SDK flag into native input", async () => {
@@ -297,44 +307,68 @@ describe("native memory input transport", () => {
 		fixture.harness.setResponses(fixture.responses());
 		await fixture.present();
 		fixture.host.defaultEditor.setText(" Yes ");
-		fixture.terminal.sendInput("\x1b\r");
+		fixture.terminal.sendInput(nativeFollowUpInput);
 		fixture.startLoop();
 		await fixture.completeReply();
 		expect(fixture.replies[0]?.originalText).toBe(" Yes ");
 	});
 
-	it.each(["\r", "\x1b\r"])("preserves queued native origin while a response is streaming (%j)", async (key) => {
+	it("uses a non-overlapping follow-up binding changed after host initialization", async () => {
 		const fixture = await createFixture();
-		let release: () => void = () => {};
-		const held = new Promise<void>((resolve) => {
-			release = resolve;
-		});
-		fixture.harness.setResponses([
-			async () => {
-				await held;
-				return fauxAssistantMessage("First response");
-			},
-			...fixture.responses(),
-		]);
-		const running = fixture.harness.session.prompt("Initial prompt");
+		const previous = fixture.host.keybindings.getUserBindings();
 		try {
-			await vi.waitFor(() => expect(fixture.harness.session.isStreaming).toBe(true));
+			fixture.host.keybindings.setUserBindings({ ...previous, "app.message.followUp": "ctrl+u" });
+			fixture.harness.setResponses(fixture.responses());
 			await fixture.present();
 			fixture.host.defaultEditor.setText(" Yes ");
-			fixture.terminal.sendInput(key);
-			await vi.waitFor(() => expect(fixture.harness.session.agent.peekQueuedMessages()).toHaveLength(1));
-			const preview = fixture.harness.session.agent.peekQueuedMessages()[0];
-			release();
-			await running;
+			fixture.terminal.sendInput("\x15");
+			fixture.startLoop();
+			await fixture.completeReply();
 			expect(fixture.replies[0]?.originalText).toBe(" Yes ");
-			const delivered = fixture.harness.session.messages.findLast((message) => message.role === "user");
-			expect(preview).toEqual(delivered);
-			expect(preview).not.toBe(delivered);
 		} finally {
-			release();
-			await running;
+			fixture.host.keybindings.setUserBindings(previous);
 		}
 	});
+
+	it.each(["\r", nativeFollowUpInput, "\x15"])(
+		"preserves queued native origin while a response is streaming (%j)",
+		async (key) => {
+			const fixture = await createFixture();
+			const previous = fixture.host.keybindings.getUserBindings();
+			if (key === "\x15")
+				fixture.host.keybindings.setUserBindings({ ...previous, "app.message.followUp": "ctrl+u" });
+			let release: () => void = () => {};
+			const held = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			fixture.harness.setResponses([
+				async () => {
+					await held;
+					return fauxAssistantMessage("First response");
+				},
+				...fixture.responses(),
+			]);
+			const running = fixture.harness.session.prompt("Initial prompt");
+			try {
+				await vi.waitFor(() => expect(fixture.harness.session.isStreaming).toBe(true));
+				await fixture.present();
+				fixture.host.defaultEditor.setText(" Yes ");
+				fixture.terminal.sendInput(key);
+				await vi.waitFor(() => expect(fixture.harness.session.agent.peekQueuedMessages()).toHaveLength(1));
+				const preview = fixture.harness.session.agent.peekQueuedMessages()[0];
+				release();
+				await running;
+				expect(fixture.replies[0]?.originalText).toBe(" Yes ");
+				const delivered = fixture.harness.session.messages.findLast((message) => message.role === "user");
+				expect(preview).toEqual(delivered);
+				expect(preview).not.toBe(delivered);
+			} finally {
+				release();
+				await running;
+				fixture.host.keybindings.setUserBindings(previous);
+			}
+		},
+	);
 
 	it("does not revive a native queue receipt from restored text", async () => {
 		const fixture = await createFixture();
@@ -377,21 +411,85 @@ describe("native memory input transport", () => {
 		expect(fixture.host.getAllQueuedMessages()).toEqual({ steering: ["Yes"], followUp: [] });
 		compacting.mockRestore();
 		await fixture.host.flushCompactionQueue({ willRetry: false });
+		await fixture.completeReply();
 		expect(fixture.replies[0]?.originalText).toBe(" Yes ");
 	});
 
 	it("preserves steering behavior when flushing into an active agent run", async () => {
 		const fixture = await createFixture();
-		fixture.harness.setResponses([fauxAssistantMessage("Done")]);
-		const compacting = vi.spyOn(fixture.harness.session, "isCompacting", "get").mockReturnValue(true);
-		await fixture.host.defaultEditor.onSubmit?.("change direction");
-		compacting.mockRestore();
-		const prompt = vi.spyOn(fixture.harness.session, "prompt");
+		let release: () => void = () => {};
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		fixture.harness.setResponses([
+			async () => {
+				await held;
+				return fauxAssistantMessage("First response");
+			},
+			fauxAssistantMessage("Done"),
+		]);
+		const running = fixture.harness.session.prompt("Initial prompt");
 		const error = vi.spyOn(fixture.host, "showError");
-		await fixture.host.flushCompactionQueue({ willRetry: false });
-		expect(prompt).toHaveBeenCalledWith("change direction", { streamingBehavior: "steer" });
-		expect(fixture.host.getAllQueuedMessages()).toEqual({ steering: [], followUp: [] });
-		expect(error).not.toHaveBeenCalled();
+		try {
+			await vi.waitFor(() => expect(fixture.harness.session.isStreaming).toBe(true));
+			const compacting = vi.spyOn(fixture.harness.session, "isCompacting", "get").mockReturnValue(true);
+			await fixture.host.defaultEditor.onSubmit?.("change direction");
+			compacting.mockRestore();
+			const prompt = vi.spyOn(fixture.harness.session, "prompt");
+			await fixture.host.flushCompactionQueue({ willRetry: false });
+			expect(prompt).toHaveBeenCalledWith("change direction", { streamingBehavior: "steer" });
+			expect(fixture.harness.session.getSteeringMessages()).toEqual(["change direction"]);
+			release();
+			await running;
+			expect(getUserTexts(fixture.harness)).toContain("change direction");
+			expect(fixture.host.getAllQueuedMessages()).toEqual({ steering: [], followUp: [] });
+			expect(error).not.toHaveBeenCalled();
+		} finally {
+			release();
+			await running;
+		}
+	});
+
+	it("retains native input across settled-event deferral after the public prompt returns", async () => {
+		let release: () => void = () => {};
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let isSettledHeld = false;
+		const fixture = await createFixture((pi) => {
+			pi.on("agent_settled", async () => {
+				if (isSettledHeld) return;
+				isSettledHeld = true;
+				await held;
+			});
+		});
+		fixture.harness.setResponses([fauxAssistantMessage("First response"), ...fixture.responses()]);
+		const running = fixture.harness.session.prompt("Initial prompt");
+		try {
+			await vi.waitFor(() => expect(isSettledHeld).toBe(true));
+			expect(fixture.harness.session.isStreaming).toBe(false);
+			await fixture.present();
+			const prompt = fixture.harness.session.prompt.bind(fixture.harness.session);
+			let deferred: Promise<void> | undefined;
+			vi.spyOn(fixture.harness.session, "prompt").mockImplementation((text, options) => {
+				const result = prompt(text, options);
+				if (text === "Yes") deferred = result;
+				return result;
+			});
+			fixture.startLoop();
+			fixture.host.defaultEditor.setText(" Yes ");
+			fixture.terminal.sendInput("\r");
+			await vi.waitFor(() => expect(deferred).toBeDefined());
+			await deferred;
+			expect(fixture.replies).toHaveLength(0);
+			release();
+			await running;
+			await fixture.completeReply();
+			expect(fixture.replies[0]?.originalText).toBe(" Yes ");
+		} finally {
+			release();
+			await running;
+		}
 	});
 
 	it("queues a normal prompt submitted before the input callback is installed", async () => {

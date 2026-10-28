@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import type { AgentSessionRuntime } from "../../../src/core/agent-session-runtime.ts";
+import { VirtualTerminal } from "../../../../tui/test/virtual-terminal.ts";
+import { ENV_AGENT_DIR } from "../../../src/config.ts";
+import { AgentSessionRuntime } from "../../../src/core/agent-session-runtime.ts";
 import type { ExtensionAPI, UserBashEvent, UserBashEventResult } from "../../../src/core/extensions/types.ts";
+import type { CustomEditor } from "../../../src/modes/interactive/components/custom-editor.ts";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
 import { runRpcMode } from "../../../src/modes/rpc/rpc-mode.ts";
 import { createHarness, type Harness } from "../harness.ts";
@@ -18,15 +21,6 @@ vi.mock("../../../src/core/output-guard.js", () => ({
 	waitForRawStdoutBackpressure: vi.fn(async () => {}),
 	writeRawStdout: (line: string) => {
 		rpcIo.outputLines.push(line);
-	},
-}));
-
-vi.mock("../../../src/modes/interactive/theme/theme.js", () => ({ theme: {} }));
-
-vi.mock("../../../src/modes/interactive/components/bash-execution.js", () => ({
-	BashExecutionComponent: class {
-		appendOutput(): void {}
-		setComplete(): void {}
 	},
 }));
 
@@ -114,26 +108,6 @@ async function startRpcHarness(extension: (pi: ExtensionAPI) => void): Promise<{
 	};
 }
 
-type InteractiveBashContext = {
-	defaultEditor: { onSubmit?: (text: string) => Promise<void> | void };
-	editor: { addToHistory?: (text: string) => void };
-	session: Harness["session"];
-	sessionManager: Harness["sessionManager"];
-	ui: { requestRender(): void };
-	chatContainer: { addChild(component: unknown): void };
-	pendingMessagesContainer: { addChild(component: unknown): void };
-	pendingBashComponents: unknown[];
-	isBashMode: boolean;
-	handleBashCommand(command: string, excludeFromContext?: boolean): Promise<void>;
-	showError(message: string): void;
-	updateEditorBorderColor(): void;
-};
-
-const interactiveModePrototype = InteractiveMode.prototype as unknown as {
-	setupEditorSubmitHandler(this: InteractiveBashContext): void;
-	handleBashCommand(this: InteractiveBashContext, command: string, excludeFromContext?: boolean): Promise<void>;
-};
-
 const localResult = {
 	output: "local output",
 	exitCode: 0,
@@ -177,6 +151,8 @@ const rpcCases: Array<{
 afterEach(() => {
 	rpcIo.outputLines = [];
 	rpcIo.lineHandler = undefined;
+	vi.restoreAllMocks();
+	vi.unstubAllEnvs();
 });
 
 describe("RPC user_bash failure handling (#9068)", () => {
@@ -235,25 +211,29 @@ describe("Interactive user_bash failure handling (#9068)", () => {
 				},
 			],
 		});
+		vi.stubEnv("PI_OFFLINE", "1");
+		vi.stubEnv(ENV_AGENT_DIR, harness.tempDir);
 		const executeBash = vi.spyOn(harness.session, "executeBash").mockResolvedValue(localResult);
-		const context: InteractiveBashContext = {
-			defaultEditor: {},
-			editor: { addToHistory: vi.fn() },
-			session: harness.session,
-			sessionManager: harness.sessionManager,
-			ui: { requestRender: vi.fn() },
-			chatContainer: { addChild: vi.fn() },
-			pendingMessagesContainer: { addChild: vi.fn() },
-			pendingBashComponents: [],
-			isBashMode: true,
-			handleBashCommand: interactiveModePrototype.handleBashCommand,
-			showError: vi.fn(),
-			updateEditorBorderColor: vi.fn(),
-		};
-		interactiveModePrototype.setupEditorSubmitHandler.call(context);
+		const runtime = new AgentSessionRuntime(
+			harness.session,
+			{
+				cwd: harness.tempDir,
+				agentDir: harness.tempDir,
+				modelRuntime: harness.session.modelRuntime,
+				settingsManager: harness.settingsManager,
+				resourceLoader: harness.session.resourceLoader,
+				diagnostics: [],
+			},
+			async () => {
+				throw new Error("The bash fixture does not replace sessions");
+			},
+		);
+		const mode = new InteractiveMode(runtime, { terminal: new VirtualTerminal() });
+		const host = mode as unknown as { defaultEditor: CustomEditor };
 
 		try {
-			await context.defaultEditor.onSubmit?.(input);
+			await mode.init();
+			await host.defaultEditor.onSubmit?.(input);
 
 			expect(events).toEqual([
 				{
@@ -265,8 +245,13 @@ describe("Interactive user_bash failure handling (#9068)", () => {
 			]);
 			expect(executeBash).not.toHaveBeenCalled();
 		} finally {
-			executeBash.mockRestore();
-			harness.cleanup();
+			try {
+				mode.stop();
+				await runtime.dispose();
+			} finally {
+				executeBash.mockRestore();
+				harness.cleanup();
+			}
 		}
 	});
 });

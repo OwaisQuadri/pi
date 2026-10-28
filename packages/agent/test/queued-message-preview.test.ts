@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
 import {
 	createAssistantMessageEventStream,
 	fauxAssistantMessage,
 	type UserMessage,
 } from "@earendil-works/pi-ai/compat";
+import { describe, it } from "vitest";
 import { Agent } from "../src/agent.ts";
 
 describe("queued message identity", () => {
