@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it, type TestContext } from "node:test";
 import { Editor } from "../src/components/editor.ts";
+import { getKeybindings } from "../src/keybindings.ts";
 import { TuiMainScreen } from "../src/tui-main-screen.ts";
 import { defaultEditorTheme } from "./test-themes.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
@@ -28,6 +29,45 @@ describe("Editor terminal submission origin", () => {
 		terminal.sendInput("\r");
 		assert.deepEqual(observed, [[" approve ", "approve"]]);
 		assert.deepEqual(submitted, ["approve"]);
+	});
+
+	it("observes backslash submission before the native editor transformation", (context) => {
+		const { terminal, editor, observed, submitted } = createFixture(context);
+		const bindings = getKeybindings();
+		const previous = bindings.getUserBindings();
+		bindings.setUserBindings({ ...previous, "tui.input.submit": "shift+enter", "tui.input.newLine": "enter" });
+		context.after(() => bindings.setUserBindings(previous));
+		editor.setText("yes\\");
+		terminal.sendInput("\r");
+		assert.deepEqual(observed, [["yes\\", "yes"]]);
+		assert.deepEqual(submitted, ["yes"]);
+	});
+
+	it("rejects listener text changes on backslash submission", (context) => {
+		const { terminal, tui, editor, observed, submitted } = createFixture(context);
+		const bindings = getKeybindings();
+		const previous = bindings.getUserBindings();
+		bindings.setUserBindings({ ...previous, "tui.input.submit": "shift+enter", "tui.input.newLine": "enter" });
+		context.after(() => bindings.setUserBindings(previous));
+		editor.setText("ordinary\\");
+		tui.addInputListener(() => {
+			editor.setText("changed\\");
+		});
+		terminal.sendInput("\r");
+		assert.deepEqual(observed, []);
+		assert.deepEqual(submitted, ["changed"]);
+	});
+
+	it("does not grant origin to programmatic backslash submission", (context) => {
+		const { editor, observed, submitted } = createFixture(context);
+		const bindings = getKeybindings();
+		const previous = bindings.getUserBindings();
+		bindings.setUserBindings({ ...previous, "tui.input.submit": "shift+enter", "tui.input.newLine": "enter" });
+		context.after(() => bindings.setUserBindings(previous));
+		editor.setText("yes\\");
+		editor.handleInput("\r");
+		assert.deepEqual(observed, []);
+		assert.deepEqual(submitted, ["yes"]);
 	});
 
 	it("does not observe calls to the public submit callback", (context) => {

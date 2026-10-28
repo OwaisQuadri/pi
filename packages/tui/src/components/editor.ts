@@ -900,8 +900,7 @@ export class Editor implements Component, Focusable {
 			(data === "\n" && data.length === 1)
 		) {
 			if (this.shouldSubmitOnBackslashEnter(data, kb)) {
-				this.handleBackspace();
-				this.submitValue(data);
+				this.submitValue(data, true);
 				return;
 			}
 			this.addNewLine();
@@ -1364,9 +1363,10 @@ export class Editor implements Component, Focusable {
 		return this.state.cursorCol > 0 && currentLine[this.state.cursorCol - 1] === "\\";
 	}
 
-	private submitValue(data: string): void {
+	private submitValue(data: string, isBackslashSubmit = false): void {
 		const text = this.state.lines.join("\n");
 		const terminalText = this.tui.consumeTerminalInput?.(this, data, text);
+		if (isBackslashSubmit) this.handleBackspace();
 		this.cancelAutocomplete();
 		const result = this.expandPasteMarkers(this.state.lines.join("\n")).trim();
 
