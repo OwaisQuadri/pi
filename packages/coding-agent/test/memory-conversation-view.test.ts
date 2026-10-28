@@ -81,6 +81,7 @@ async function createFixture() {
 	if (!tool) throw new Error("The native tool wrapper is missing");
 	return {
 		harness,
+		runtime,
 		mode,
 		terminal,
 		stop,
@@ -350,6 +351,63 @@ describe("owned native memory transcript view", () => {
 		renderer.start();
 		expect(beforePause.present({ id: "stale", text: "After restart" })).toBeUndefined();
 		expect(await fixture.present("Fresh view after restart", "proposal-3")).toBeDefined();
+	});
+
+	it.each(["reject", "resolve"] as const)(
+		"does not let a stopped factory %s replace a new host",
+		async (settlement) => {
+			const fixture = await createFixture();
+			await fixture.mode.init();
+			await fixture.present("Before the pending factory");
+			let finishFactory: (component: Component) => void = () => {
+				throw new Error("The factory was not started");
+			};
+			let rejectFactory: (error: Error) => void = () => {
+				throw new Error("The factory was not started");
+			};
+			const factory = new Promise<Component>((resolve, reject) => {
+				finishFactory = resolve;
+				rejectFactory = reject;
+			});
+			const completion = fixture.ui.custom(() => factory);
+			const rejection = expect(completion).rejects.toThrow(
+				settlement === "reject" ? "Late factory rejection" : "The custom UI context changed before installation",
+			);
+			fixture.stop();
+			const replacement = new InteractiveMode(fixture.runtime, { terminal: new VirtualTerminal(100, 30) });
+			cleanups.push(() => replacement.stop());
+			await replacement.init();
+			expect(await fixture.present("Replacement native host", "replacement")).toBeDefined();
+			const current = fixture.facade;
+			if (settlement === "reject") rejectFactory(new Error("Late factory rejection"));
+			else finishFactory(new Text("Stale custom component"));
+			await rejection;
+			expect(current.present({ id: "current", text: "The replacement remains current" })).toBeDefined();
+			expect(await fixture.present("The replacement still rebuilds", "next")).toBeDefined();
+		},
+	);
+
+	it("does not restore an old draft when a reset factory rejects", async () => {
+		const fixture = await createFixture();
+		await fixture.mode.init();
+		await fixture.present("Before the pending factory");
+		fixture.ui.setEditorText("Old draft");
+		let rejectFactory: (error: Error) => void = () => {
+			throw new Error("The factory was not started");
+		};
+		const factory = new Promise<Component>((_resolve, reject) => {
+			rejectFactory = reject;
+		});
+		const completion = fixture.ui.custom(() => factory);
+		const rejection = expect(completion).rejects.toThrow("Late factory rejection");
+		fixture.nativeHost.resetExtensionUI();
+		fixture.ui.setEditorText("Current draft");
+		expect(await fixture.present("Current native UI", "current")).toBeDefined();
+		const current = fixture.facade;
+		rejectFactory(new Error("Late factory rejection"));
+		await rejection;
+		expect(fixture.ui.getEditorText()).toBe("Current draft");
+		expect(current.present({ id: "current", text: "The current view remains owned" })).toBeDefined();
 	});
 
 	it("does not rebuild a retired interactive host", async () => {
