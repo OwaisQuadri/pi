@@ -2069,6 +2069,7 @@ export class InteractiveMode {
 	}
 
 	#bindMemoryConversationView(): void {
+		if (!this.isInitialized || this.isShuttingDown) return;
 		const session = this.session;
 		const runner = session.extensionRunner;
 		const renderer = this.renderer;
@@ -3105,7 +3106,7 @@ export class InteractiveMode {
 					})
 					.catch((err) => {
 						if (isClosed) return;
-						if (!isOverlay) restoreEditor();
+						if (!isOverlay && (!isNative || this.#memoryViewTransitions.has(transition))) restoreEditor();
 						reject(err);
 					});
 			});
@@ -7214,7 +7215,10 @@ export class InteractiveMode {
 	}
 
 	stop(fullscreenExitOutput = this.settingsManager.getFullscreenExitOutput()): void {
-		if (#bindMemoryConversationView in this) unbindNativeMemoryConversationView(this.session.extensionRunner);
+		if (#bindMemoryConversationView in this) {
+			this.#memoryViewTransitions.clear();
+			unbindNativeMemoryConversationView(this.session.extensionRunner);
+		}
 		this.disposeActiveSelector();
 		if (this.settingsManager.getShowTerminalProgress()) {
 			this.ui.terminal.setProgress(false);
