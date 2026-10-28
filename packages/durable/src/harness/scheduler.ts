@@ -492,6 +492,7 @@ export class TaskScheduler {
 		// A reconcile pass with work to do is work too: it finalizes held outcomes and marks cascades, at open as
 		// recovery. A process that dies before it lands must be woken again. A pass with nothing to do is not.
 		let active = this.#invocations.size > 0 || this.#reconcilingWork > 0 || this.#reconcileWork();
+		if (active && this.#sleeping.size === 0) return { active };
 		let at: number | undefined;
 		let snapshot: RegistrySnapshot | undefined;
 		let snapshotFailed = false;
