@@ -697,6 +697,11 @@ export class Editor implements Component, Focusable {
 		return { handled: true, focus: true };
 	}
 
+	isSubmitInput(data: string): boolean {
+		const keybindings = getKeybindings();
+		return keybindings.matches(data, "tui.input.submit") || keybindings.matches(data, "tui.input.newLine");
+	}
+
 	handleInput(data: string): void {
 		const kb = getKeybindings();
 

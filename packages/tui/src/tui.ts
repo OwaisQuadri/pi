@@ -132,6 +132,7 @@ export interface Component {
 
 	/** Optional handler for keyboard input when component has focus. */
 	handleInput?(data: string): void;
+	isSubmitInput?(data: string): boolean;
 
 	/** Optional normalized mouse handler. */
 	handleMouse?(event: TuiMouseEvent): TuiMouseEventResult | undefined;
@@ -1104,7 +1105,8 @@ export abstract class TuiBase extends Container implements TUI {
 		const originalFocus = this.focusedComponent;
 		const keybindings = getKeybindings();
 		const isSubmitInput =
-			keybindings.matches(data, "tui.input.submit") || keybindings.matches(data, "tui.input.newLine");
+			originalFocus?.isSubmitInput?.(data) ??
+			(keybindings.matches(data, "tui.input.submit") || keybindings.matches(data, "tui.input.newLine"));
 		const originalText =
 			isSubmitInput && originalFocus && "getText" in originalFocus && typeof originalFocus.getText === "function"
 				? originalFocus.getText()

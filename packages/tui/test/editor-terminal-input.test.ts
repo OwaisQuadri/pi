@@ -275,9 +275,10 @@ describe("Editor terminal submission origin", () => {
 			if (isReentered) return;
 			isReentered = true;
 			fixture.editor.setText("nested");
-			fixture.editor.handleInput("\r");
+			fixture.editor.handleInput("\x1b[13;2u");
 		};
 		fixture.terminal.sendInput("\r");
+		assert.equal(fixture.submitted[0], "nested");
 		assert.deepEqual(fixture.observed, []);
 	});
 

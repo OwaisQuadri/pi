@@ -19,7 +19,7 @@ A renderer stop or restart permanently retires the old renderer capture, even if
 
 ## Native reply transport
 
-The default editor captures the original terminal input before mutable submission callbacks. A constructor-owned submission scope carries that observation into the interactive host. Caller-supplied data flags and programmatic copies cannot substitute for the observation.
+The default editor captures the original terminal input before mutable submission callbacks. The terminal captures a snapshot only for a key that the focused editor identifies as a possible submission, using its current bindings. This includes the configured follow-up key. The native checks still require unchanged focus, key data and text, and one-time consumption. A constructor-owned submission scope carries that observation into the interactive host. Caller-supplied data flags and programmatic copies cannot substitute for the observation.
 
 The host keeps original input separate from transformed model text. A private envelope carries it through startup, streaming, follow-up and compaction queues. The session associates the final user-message object by identity, then activates it before extension and queue observers. A copied options object, a copied message or a public queue preview cannot activate the original input. Public text retrieval and queue restoration discard the old observation; editing restored text requires a new native submission.
 
