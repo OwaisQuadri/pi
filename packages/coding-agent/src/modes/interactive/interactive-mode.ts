@@ -462,6 +462,7 @@ export class InteractiveMode {
 	private runtimeHost: AgentSessionRuntime;
 	private renderer: TuiMainScreen | TuiAltScreen;
 	#renderMemoryFrame: () => void;
+	#memoryViewTransitions = new Set<object>();
 	private ui: TUI;
 	private mainScreenRenderState: TuiMainScreenRenderState | undefined;
 	private loadedResourcesContainer: Container;
@@ -2084,6 +2085,8 @@ export class InteractiveMode {
 			this.#renderMemoryFrame === renderFrame &&
 			this.chatContainer === chat &&
 			this.editor === this.defaultEditor &&
+			this.editorContainer.children.includes(this.defaultEditor) &&
+			this.#memoryViewTransitions.size === 0 &&
 			this.extensionDialogs.length === 0 &&
 			renderer.getFocusedComponent() === this.defaultEditor &&
 			!renderer.hasOverlayEntries;
@@ -2531,6 +2534,10 @@ export class InteractiveMode {
 	}
 
 	private resetExtensionUI(): void {
+		if (#bindMemoryConversationView in this) {
+			invalidateNativeMemoryConversationView(this.session.extensionRunner);
+			this.#memoryViewTransitions.clear();
+		}
 		if (this.extensionDialogs.length > 0) {
 			for (const dialog of this.extensionDialogs) {
 				dialog.component.dispose?.();
@@ -2914,82 +2921,83 @@ export class InteractiveMode {
 	 * Pass undefined to restore the default editor.
 	 */
 	private setCustomEditorComponent(factory: EditorFactory | undefined): void {
-		if (#bindMemoryConversationView in this) invalidateNativeMemoryConversationView(this.session.extensionRunner);
-		this.editorComponentFactory = factory;
-
-		// Save text from current editor before switching
-		const currentText = this.editor.getText();
-
-		this.disposeActiveSelector();
-		this.editorContainer.clear();
-
-		if (factory) {
-			// Create the custom editor with tui, theme, and keybindings
-			const newEditor = factory(this.ui, getEditorTheme(), this.keybindings);
-
-			// Wire up callbacks from the default editor
-			newEditor.onSubmit = this.defaultEditor.onSubmit;
-			newEditor.onChange = this.defaultEditor.onChange;
-
-			// Copy text from previous editor
-			newEditor.setText(currentText);
-
-			// Copy appearance settings if supported
-			if (newEditor.borderColor !== undefined) {
-				newEditor.borderColor = this.defaultEditor.borderColor;
-			}
-			if (newEditor.setPaddingX !== undefined) {
-				newEditor.setPaddingX(this.defaultEditor.getPaddingX());
-			}
-			if (newEditor.setAutocompleteMaxVisible !== undefined) {
-				newEditor.setAutocompleteMaxVisible(this.defaultEditor.getAutocompleteMaxVisible());
-			}
-
-			// Set autocomplete if supported
-			if (newEditor.setAutocompleteProvider && this.autocompleteProvider) {
-				newEditor.setAutocompleteProvider(this.autocompleteProvider);
-			}
-
-			// If extending CustomEditor, copy app-level handlers
-			// Use duck typing since instanceof fails across jiti module boundaries
-			const customEditor = newEditor as unknown as Record<string, unknown>;
-			if ("actionHandlers" in customEditor && customEditor.actionHandlers instanceof Map) {
-				if (!customEditor.onEscape) {
-					customEditor.onEscape = () => this.defaultEditor.onEscape?.();
-				}
-				if (!customEditor.onCtrlD) {
-					customEditor.onCtrlD = () => this.defaultEditor.onCtrlD?.();
-				}
-				if (!customEditor.onPasteImage) {
-					customEditor.onPasteImage = () => this.defaultEditor.onPasteImage?.();
-				}
-				if (!customEditor.onExtensionShortcut) {
-					customEditor.onExtensionShortcut = (data: string) => this.defaultEditor.onExtensionShortcut?.(data);
-				}
-				// Copy action handlers (clear, suspend, model switching, etc.)
-				for (const [action, handler] of this.defaultEditor.actionHandlers) {
-					(customEditor.actionHandlers as Map<string, () => void>).set(action, handler);
-				}
-			}
-
-			this.editor = newEditor;
-		} else {
-			// Restore default editor with text from custom editor
-			this.defaultEditor.setText(currentText);
-			this.editor = this.defaultEditor;
+		const isNative = #bindMemoryConversationView in this;
+		const transition = {};
+		if (isNative) {
+			this.#memoryViewTransitions.add(transition);
+			invalidateNativeMemoryConversationView(this.session.extensionRunner);
 		}
+		try {
+			const currentText = this.editor.getText();
 
-		this.editorContainer.addChild(this.editor as Component);
-		if (this.activeStatusIndicator) {
-			this.statusContainer.clear();
-			this.activeWorkingIndicatorEmbedded = this.setEditorWorkingStatusIndicator(this.activeStatusIndicator);
-			if (!this.activeWorkingIndicatorEmbedded) {
-				this.statusContainer.addChild(this.activeStatusIndicator);
+			let nextEditor = this.editor;
+
+			if (factory) {
+				const newEditor = factory(this.ui, getEditorTheme(), this.keybindings);
+
+				newEditor.onSubmit = this.defaultEditor.onSubmit;
+				newEditor.onChange = this.defaultEditor.onChange;
+
+				newEditor.setText(currentText);
+
+				if (newEditor.borderColor !== undefined) {
+					newEditor.borderColor = this.defaultEditor.borderColor;
+				}
+				if (newEditor.setPaddingX !== undefined) {
+					newEditor.setPaddingX(this.defaultEditor.getPaddingX());
+				}
+				if (newEditor.setAutocompleteMaxVisible !== undefined) {
+					newEditor.setAutocompleteMaxVisible(this.defaultEditor.getAutocompleteMaxVisible());
+				}
+
+				if (newEditor.setAutocompleteProvider && this.autocompleteProvider) {
+					newEditor.setAutocompleteProvider(this.autocompleteProvider);
+				}
+
+				const customEditor = newEditor as unknown as Record<string, unknown>;
+				if ("actionHandlers" in customEditor && customEditor.actionHandlers instanceof Map) {
+					if (!customEditor.onEscape) {
+						customEditor.onEscape = () => this.defaultEditor.onEscape?.();
+					}
+					if (!customEditor.onCtrlD) {
+						customEditor.onCtrlD = () => this.defaultEditor.onCtrlD?.();
+					}
+					if (!customEditor.onPasteImage) {
+						customEditor.onPasteImage = () => this.defaultEditor.onPasteImage?.();
+					}
+					if (!customEditor.onExtensionShortcut) {
+						customEditor.onExtensionShortcut = (data: string) => this.defaultEditor.onExtensionShortcut?.(data);
+					}
+					for (const [action, handler] of this.defaultEditor.actionHandlers) {
+						(customEditor.actionHandlers as Map<string, () => void>).set(action, handler);
+					}
+				}
+
+				nextEditor = newEditor;
+			} else {
+				this.defaultEditor.setText(currentText);
+				nextEditor = this.defaultEditor;
 			}
+
+			if (isNative && !this.#memoryViewTransitions.has(transition))
+				throw new Error("The editor context changed before installation.");
+			this.disposeActiveSelector();
+			this.editorContainer.clear();
+			this.editor = nextEditor;
+			this.editorComponentFactory = factory;
+			this.editorContainer.addChild(this.editor as Component);
+			if (this.activeStatusIndicator) {
+				this.statusContainer.clear();
+				this.activeWorkingIndicatorEmbedded = this.setEditorWorkingStatusIndicator(this.activeStatusIndicator);
+				if (!this.activeWorkingIndicatorEmbedded) {
+					this.statusContainer.addChild(this.activeStatusIndicator);
+				}
+			}
+			this.ui.setFocus(this.editor as Component);
+			this.ui.requestRender();
+		} finally {
+			if (isNative && this.#memoryViewTransitions.delete(transition)) this.#bindMemoryConversationView();
 		}
-		this.ui.setFocus(this.editor as Component);
-		if (#bindMemoryConversationView in this) this.#bindMemoryConversationView();
-		this.ui.requestRender();
 	}
 
 	/**
@@ -3019,66 +3027,91 @@ export class InteractiveMode {
 			onHandle?: (handle: OverlayHandle) => void;
 		},
 	): Promise<T> {
-		const savedText = this.editor.getText();
-		const isOverlay = options?.overlay ?? false;
+		const isNative = #bindMemoryConversationView in this;
+		const transition = {};
+		if (isNative) {
+			this.#memoryViewTransitions.add(transition);
+			invalidateNativeMemoryConversationView(this.session.extensionRunner);
+		}
+		try {
+			const savedText = this.editor.getText();
+			const isOverlay = options?.overlay ?? false;
 
-		return new Promise((resolve, reject) => {
-			let component: ExtensionDialogComponent | undefined;
-			let overlayHandle: OverlayHandle | undefined;
-			let closed = false;
+			return await new Promise((resolve, reject) => {
+				let component: ExtensionDialogComponent | undefined;
+				let overlayHandle: OverlayHandle | undefined;
+				let isClosed = false;
 
-			const restoreEditor = () => {
-				if (component) this.removeExtensionDialog(component);
-				this.editor.setText(savedText);
-				this.ui.requestRender();
-			};
+				const restoreEditor = () => {
+					if (component) this.removeExtensionDialog(component);
+					this.editor.setText(savedText);
+					this.ui.requestRender();
+				};
 
-			const close = (result: T) => {
-				if (closed) return;
-				closed = true;
-				// Remove this overlay, not the topmost one: another overlay may have opened above it.
-				if (isOverlay) overlayHandle?.hide();
-				else restoreEditor();
-				// Note: both branches above already call requestRender
-				resolve(result);
-				try {
-					component?.dispose?.();
-				} catch {
-					/* ignore dispose errors */
-				}
-			};
-
-			Promise.resolve(factory(this.ui, theme, this.keybindings, close))
-				.then((c) => {
-					if (closed) return;
-					component = c;
-					if (isOverlay) {
-						// Resolve overlay options - can be static or dynamic function
-						const resolveOptions = (): OverlayOptions | undefined => {
-							if (options?.overlayOptions) {
-								const opts =
-									typeof options.overlayOptions === "function"
-										? options.overlayOptions()
-										: options.overlayOptions;
-								return opts;
-							}
-							// Fallback: use component's width property if available
-							const w = (c as { width?: number }).width;
-							return w ? { width: w } : undefined;
-						};
-						overlayHandle = this.ui.showOverlay(c, resolveOptions());
-						// Expose handle to caller for visibility control
-						options?.onHandle?.(overlayHandle);
-					} else {
-						this.pushExtensionDialog(c);
+				const close = (result: T) => {
+					if (isClosed) return;
+					isClosed = true;
+					if (isNative && !this.#memoryViewTransitions.has(transition)) {
+						try {
+							if (isOverlay) component?.dispose?.();
+						} finally {
+							reject(new Error("The custom UI context changed before completion."));
+						}
+						return;
 					}
-				})
-				.catch((err) => {
-					if (closed) return;
-					if (!isOverlay) restoreEditor();
-					reject(err);
-				});
-		});
+					if (isOverlay) overlayHandle?.hide();
+					else restoreEditor();
+					resolve(result);
+					try {
+						component?.dispose?.();
+					} catch {
+						return;
+					}
+				};
+
+				Promise.resolve(factory(this.ui, theme, this.keybindings, close))
+					.then((c) => {
+						if (isClosed) {
+							c.dispose?.();
+							return;
+						}
+						if (isNative && !this.#memoryViewTransitions.has(transition)) {
+							isClosed = true;
+							try {
+								c.dispose?.();
+							} finally {
+								reject(new Error("The custom UI context changed before installation."));
+							}
+							return;
+						}
+						component = c;
+						if (isOverlay) {
+							const resolveOptions = (): OverlayOptions | undefined => {
+								if (options?.overlayOptions) {
+									const opts =
+										typeof options.overlayOptions === "function"
+											? options.overlayOptions()
+											: options.overlayOptions;
+									return opts;
+								}
+								const w = (c as { width?: number }).width;
+								return w ? { width: w } : undefined;
+							};
+							overlayHandle = this.ui.showOverlay(c, resolveOptions());
+							options?.onHandle?.(overlayHandle);
+						} else {
+							this.pushExtensionDialog(c);
+						}
+					})
+					.catch((err) => {
+						if (isClosed) return;
+						if (!isOverlay) restoreEditor();
+						reject(err);
+					});
+			});
+		} finally {
+			if (isNative && this.#memoryViewTransitions.delete(transition)) this.#bindMemoryConversationView();
+		}
 	}
 
 	/**
@@ -5965,6 +5998,7 @@ export class InteractiveMode {
 
 	/** `onBack` reopens the selector the login was started from when the user cancels it. */
 	private async startProviderLogin(providerOption: AuthSelectorProvider, onBack?: () => void): Promise<void> {
+		if (#bindMemoryConversationView in this) invalidateNativeMemoryConversationView(this.session.extensionRunner);
 		if (providerOption.authType === "oauth") {
 			await this.showLoginDialog(providerOption.id, providerOption.name, onBack);
 		} else if (providerOption.method?.login) {

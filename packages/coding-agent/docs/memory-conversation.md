@@ -13,9 +13,9 @@ The facade does not return an approval flag or execute a memory write. The memor
 
 ## Limits of this increment
 
-The interactive host binds the view through its native runner. It installs the complete, immutable proposal as literal text in the normal transcript and requires a native render pass before confirming installation. Native formatting can wrap lines and expand tabs; the stored proposal is unchanged. A custom editor, a dialog, an overlay, a stopped or failed render, or a replaced session, runner, renderer, or transcript cannot confirm the proposal. Terminal control codes and blank proposals are rejected rather than silently changing the displayed proposal.
+The interactive host binds the view through its native runner. It installs the complete, immutable proposal as literal text in the normal transcript and requires a native render pass before confirming installation. Native formatting can wrap lines and expand tabs; the stored proposal is unchanged. A custom or detached editor, an editor or custom-dialog transition, a dialog, an overlay, a stopped or failed render, or a replaced session, runner, renderer, or transcript cannot confirm the proposal. Terminal control codes and blank proposals are rejected rather than silently changing the displayed proposal.
 
-A renderer stop or restart retires the captured view, even if the same renderer resumes. A fresh tool context can bind the current native view after a context reset; it cannot revive an earlier facade or reply. Retiring the view removes the registry’s rebuild callback.
+A renderer stop or restart permanently retires the old renderer capture, even if the same renderer resumes. While the interactive host remains bound, a fresh tool context can bind the current native view after a restart or context reset. It cannot revive an earlier facade or reply. Unbinding the interactive host removes its registry rebuild callback. Revoking the runner removes the registry entry.
 
 A facade alone cannot authorize a write. The input and decision connections remain incomplete. Synthetic state tests do not prove that the live terminal displayed a proposal or received a reply.
 

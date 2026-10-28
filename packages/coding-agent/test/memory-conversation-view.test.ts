@@ -1,4 +1,4 @@
-import type { TUI } from "@earendil-works/pi-tui";
+import { type Component, type Container, Text, type TUI } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
@@ -16,6 +16,7 @@ import {
 	unbindNativeMemoryConversationView,
 } from "../src/core/memory-conversation.ts";
 import { CustomEditor } from "../src/modes/interactive/components/custom-editor.ts";
+import type { AuthSelectorProvider } from "../src/modes/interactive/components/oauth-selector.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { createHarness } from "./suite/harness.ts";
 
@@ -83,6 +84,19 @@ async function createFixture() {
 		mode,
 		terminal,
 		stop,
+		nativeHost: mode as unknown as {
+			renderer: TUI & { getFocusedComponent(): Component | null };
+			editorContainer: Container;
+			resetExtensionUI(): void;
+			startProviderLogin(provider: AuthSelectorProvider): Promise<void>;
+		},
+		facadeForRebuild() {
+			const context = {};
+			bindNativeMemoryConversationContext(context, harness.session.extensionRunner, tool);
+			const current = getMemoryConversation(context);
+			if (!current) throw new Error("The native registry did not bind the fixture context");
+			return current;
+		},
 		get facade() {
 			if (!facade) throw new Error("The tool context has no native facade");
 			return facade;
@@ -153,6 +167,169 @@ describe("owned native memory transcript view", () => {
 		fixture.ui.setEditorComponent(undefined);
 		expect(await fixture.present("Default editor restored", "proposal-2")).toBeDefined();
 		expect(beforeFactory.present({ id: "stale", text: "Still stale" })).toBeUndefined();
+	});
+
+	it("requires the default editor to remain installed in its native slot", async () => {
+		const fixture = await createFixture();
+		await fixture.mode.init();
+		await fixture.present("Before editor detachment");
+		const before = fixture.facade;
+		const slot = fixture.nativeHost.editorContainer;
+		const installed = [...slot.children];
+		slot.clear();
+		try {
+			expect(before.present({ id: "detached", text: "Detached editor" })).toBeUndefined();
+			expect(await fixture.present("Fresh context with no editor")).toBeUndefined();
+		} finally {
+			for (const component of installed) slot.addChild(component);
+		}
+		expect(await fixture.present("Editor reattached", "proposal-2")).toBeDefined();
+		expect(before.present({ id: "stale", text: "Still stale" })).toBeUndefined();
+	});
+
+	it("blocks fresh contexts during a throwing editor factory without detaching the editor", async () => {
+		const fixture = await createFixture();
+		await fixture.mode.init();
+		await fixture.present("Before replacement");
+		const before = fixture.facade;
+		const focus = fixture.nativeHost.renderer.getFocusedComponent();
+		let during: MemoryConversation | undefined;
+		expect(() =>
+			fixture.ui.setEditorComponent(() => {
+				expect(before.present({ id: "old", text: "Old factory facade" })).toBeUndefined();
+				during = fixture.facadeForRebuild();
+				expect(during.present({ id: "fresh", text: "Fresh factory facade" })).toBeUndefined();
+				throw new Error("Fixture editor factory failed");
+			}),
+		).toThrow("Fixture editor factory failed");
+		expect(fixture.nativeHost.renderer.getFocusedComponent()).toBe(focus);
+		expect(fixture.nativeHost.editorContainer.children).toContain(focus);
+		expect(await fixture.present("After the failed factory", "proposal-2")).toBeDefined();
+		expect(before.present({ id: "old", text: "Still stale" })).toBeUndefined();
+		expect(during?.present({ id: "fresh", text: "Still stale" })).toBeUndefined();
+	});
+
+	it.each([false, true])("revokes before a custom factory and after closing overlay=%s", async (isOverlay) => {
+		const fixture = await createFixture();
+		await fixture.mode.init();
+		await fixture.present("Before custom UI");
+		const before = fixture.facade;
+		const component = new Text("Fixture custom component");
+		let during: MemoryConversation | undefined;
+		let close: (result: string) => void = () => {
+			throw new Error("The custom component was not created");
+		};
+		const completion = fixture.ui.custom<string>(
+			(_ui, _theme, _keys, done) => {
+				close = done;
+				expect(before.present({ id: "old", text: "During factory" })).toBeUndefined();
+				during = fixture.facadeForRebuild();
+				expect(during.present({ id: "fresh", text: "During factory" })).toBeUndefined();
+				return component;
+			},
+			{ overlay: isOverlay },
+		);
+		try {
+			await vi.waitFor(() => expect(fixture.nativeHost.renderer.getFocusedComponent()).toBe(component));
+			expect(await fixture.present("During custom UI")).toBeUndefined();
+		} finally {
+			close("closed");
+		}
+		expect(await completion).toBe("closed");
+		expect(await fixture.present("After custom UI", "proposal-2")).toBeDefined();
+		expect(before.present({ id: "old", text: "After close" })).toBeUndefined();
+		expect(during?.present({ id: "fresh", text: "After close" })).toBeUndefined();
+	});
+
+	it.each([false, true])("recovers after a rejected custom factory overlay=%s", async (isOverlay) => {
+		const fixture = await createFixture();
+		await fixture.mode.init();
+		await fixture.present("Before rejected custom UI");
+		const before = fixture.facade;
+		await expect(
+			fixture.ui.custom(
+				() => {
+					throw new Error("Fixture custom factory failed");
+				},
+				{ overlay: isOverlay },
+			),
+		).rejects.toThrow("Fixture custom factory failed");
+		expect(await fixture.present("After rejected factory", "proposal-2")).toBeDefined();
+		expect(before.present({ id: "old", text: "After rejection" })).toBeUndefined();
+	});
+
+	it.each([false, true])("does not mount a pending factory after reset overlay=%s", async (isOverlay) => {
+		const fixture = await createFixture();
+		await fixture.mode.init();
+		await fixture.present("Before the pending factory");
+		const before = fixture.facade;
+		let finishFactory: (component: Component) => void = () => {
+			throw new Error("The factory was not started");
+		};
+		const factory = new Promise<Component>((resolve) => {
+			finishFactory = resolve;
+		});
+		const completion = fixture.ui.custom(() => factory, { overlay: isOverlay });
+		const rejection = expect(completion).rejects.toThrow("The custom UI context changed before installation");
+		fixture.nativeHost.resetExtensionUI();
+		expect(await fixture.present("Current native UI", "proposal-2")).toBeDefined();
+		const current = fixture.facade;
+		const dispose = vi.fn(() => {
+			throw new Error("Fixture cleanup failed");
+		});
+		const component = { render: () => ["Stale custom UI"], invalidate: vi.fn(), dispose };
+		finishFactory(component);
+		await rejection;
+		expect(dispose).toHaveBeenCalledOnce();
+		expect(fixture.nativeHost.renderer.hasOverlay()).toBe(false);
+		expect(current.present({ id: "current", text: "Still current" })).toBeDefined();
+		expect(before.present({ id: "stale", text: "Still stale" })).toBeUndefined();
+	});
+
+	it.each([false, true])("does not let an old completion replace reset UI overlay=%s", async (isOverlay) => {
+		const fixture = await createFixture();
+		await fixture.mode.init();
+		await fixture.present("Before custom UI");
+		const component = new Text("Old custom UI");
+		let close: (result: string) => void = () => {
+			throw new Error("The factory was not started");
+		};
+		const completion = fixture.ui.custom<string>(
+			(_ui, _theme, _keys, done) => {
+				close = done;
+				return component;
+			},
+			{ overlay: isOverlay },
+		);
+		const rejection = expect(completion).rejects.toThrow("The custom UI context changed before completion");
+		await vi.waitFor(() => expect(fixture.nativeHost.renderer.getFocusedComponent()).toBe(component));
+		fixture.nativeHost.resetExtensionUI();
+		expect(await fixture.present("Current native UI", "proposal-2")).toBeDefined();
+		const current = fixture.facade;
+		close("Stale completion");
+		await rejection;
+		expect(fixture.nativeHost.renderer.getFocusedComponent()).not.toBe(component);
+		expect(current.present({ id: "current", text: "Still current" })).toBeDefined();
+	});
+
+	it("revokes the direct ambient-login path without using credentials", async () => {
+		const fixture = await createFixture();
+		await fixture.mode.init();
+		await fixture.present("Before the login dialog");
+		const before = fixture.facade;
+		const editor = fixture.nativeHost.renderer.getFocusedComponent();
+		await fixture.nativeHost.startProviderLogin({
+			id: "fixture-ambient",
+			name: "Fixture ambient",
+			authType: "api_key",
+		});
+		const dialog = fixture.nativeHost.renderer.getFocusedComponent();
+		if (!dialog?.handleInput || dialog === editor) throw new Error("The native ambient dialog did not open");
+		expect(await fixture.present("During login")).toBeUndefined();
+		dialog.handleInput("\x1b");
+		expect(fixture.nativeHost.renderer.getFocusedComponent()).toBe(editor);
+		expect(await fixture.present("After login cancellation", "proposal-2")).toBeDefined();
+		expect(before.present({ id: "stale", text: "After login" })).toBeUndefined();
 	});
 
 	it("does not revive a facade when the same renderer stops and resumes", async () => {
