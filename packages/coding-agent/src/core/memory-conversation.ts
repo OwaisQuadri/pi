@@ -1,4 +1,4 @@
-const nativeRunners = new WeakMap<object, MemoryConversationController>();
+const nativeRunners = new WeakMap<object, { controller: MemoryConversationController; rebindView?: () => void }>();
 const nativeContexts = new WeakMap<object, MemoryConversation>();
 
 export function getMemoryConversation(context: object): MemoryConversation | undefined {
@@ -6,18 +6,43 @@ export function getMemoryConversation(context: object): MemoryConversation | und
 }
 
 export function bindNativeMemoryConversationRunner(runner: object, controller: MemoryConversationController): void {
-	nativeRunners.set(runner, controller);
+	nativeRunners.set(runner, { controller });
+}
+
+export function bindNativeMemoryConversationView(
+	runner: object,
+	view: NativeMemoryConversationView,
+	rebindView: () => void,
+): ((originalText: string, submittedText: string) => object | undefined) | undefined {
+	const binding = nativeRunners.get(runner);
+	if (!binding) return undefined;
+	binding.rebindView = rebindView;
+	return binding.controller.bindView(view);
+}
+
+export function invalidateNativeMemoryConversationView(runner: object): void {
+	nativeRunners.get(runner)?.controller.invalidate();
+}
+
+export function unbindNativeMemoryConversationView(runner: object): void {
+	const binding = nativeRunners.get(runner);
+	if (!binding) return;
+	delete binding.rebindView;
+	binding.controller.invalidate();
 }
 
 export function bindNativeMemoryConversationContext(context: object, runner: object, owner: object): void {
-	const controller = nativeRunners.get(runner);
-	if (controller) nativeContexts.set(context, controller.forTool(owner));
+	const binding = nativeRunners.get(runner);
+	if (!binding) return;
+	if (!binding.controller.isViewBound) binding.rebindView?.();
+	if (nativeRunners.get(runner) !== binding) return;
+	nativeContexts.set(context, binding.controller.forTool(owner));
 }
 
 export function revokeNativeMemoryConversationRunner(runner: object): void {
-	const controller = nativeRunners.get(runner);
+	const binding = nativeRunners.get(runner);
 	nativeRunners.delete(runner);
-	controller?.invalidate();
+	binding?.controller.invalidate();
 }
 
 export interface MemoryConversationProposal {
@@ -62,6 +87,16 @@ export class MemoryConversationController {
 	#inputs = new WeakMap<object, NativeInput>();
 	#messages = new WeakMap<object, NativeInput>();
 	#activatedMessages = new WeakSet<object>();
+
+	get isViewBound(): boolean {
+		const view = this.#view;
+		const generation = this.#generation;
+		try {
+			return view?.isActive() === true && view === this.#view && generation === this.#generation;
+		} catch {
+			return false;
+		}
+	}
 
 	bindView(view: NativeMemoryConversationView): (originalText: string, submittedText: string) => object | undefined {
 		this.invalidate();

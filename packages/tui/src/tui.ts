@@ -16,6 +16,13 @@ import {
 import { getCapabilities, isImageLine, setCellDimensions } from "./terminal-image.ts";
 import { extractSegments, normalizeTerminalOutput, sliceByColumn, sliceWithWidth, visibleWidth } from "./utils.ts";
 
+const nativeTuiLifetimes = new WeakMap<object, object | null>();
+
+export function captureTuiLifecycle(tui: object): () => boolean {
+	const lifetime = nativeTuiLifetimes.get(tui);
+	return () => lifetime !== undefined && lifetime !== null && nativeTuiLifetimes.get(tui) === lifetime;
+}
+
 /**
  * Component interface - all components must implement this
  */
@@ -545,6 +552,7 @@ export abstract class TuiBase extends Container implements TUI {
 
 	constructor(terminal: Terminal, showHardwareCursor?: boolean, logDirectory?: string) {
 		super();
+		nativeTuiLifetimes.set(this, null);
 		this.terminal = terminal;
 		this.logDirectory = logDirectory;
 		if (showHardwareCursor !== undefined) {
@@ -951,6 +959,7 @@ export abstract class TuiBase extends Container implements TUI {
 	}
 
 	start(): void {
+		if (nativeTuiLifetimes.has(this)) nativeTuiLifetimes.set(this, null);
 		this.stopped = false;
 		process.off("exit", this.exitRestoreHandler);
 		process.on("exit", this.exitRestoreHandler);
@@ -966,6 +975,7 @@ export abstract class TuiBase extends Container implements TUI {
 		}
 		this.queryCellSize();
 		this.requestRender();
+		if (nativeTuiLifetimes.has(this) && !this.stopped) nativeTuiLifetimes.set(this, {});
 	}
 
 	addInputListener(listener: TuiInputListener): () => void {
@@ -1014,6 +1024,7 @@ export abstract class TuiBase extends Container implements TUI {
 	}
 
 	stop(options: TuiStopOptions = {}): void {
+		if (nativeTuiLifetimes.has(this)) nativeTuiLifetimes.set(this, null);
 		this.stopped = true;
 		process.off("exit", this.exitRestoreHandler);
 		this.cancelRenderTimer();

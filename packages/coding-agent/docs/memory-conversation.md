@@ -1,6 +1,6 @@
 # Memory conversation state — incomplete
 
-This increment adds private session state. It does not enable conversational memory approval. The built-in transcript, terminal-input route, and private memory-decision consumer are not connected yet. No memory slash command or separate review mode is added.
+This increment adds private session state and a built-in transcript view. It does not enable conversational memory approval. The terminal-input route and private memory-decision consumer are not connected yet. No memory slash command or separate review mode is added.
 
 ## Tool access
 
@@ -13,8 +13,12 @@ The facade does not return an approval flag or execute a memory write. The memor
 
 ## Limits of this increment
 
-There is no native view binding in this increment. A facade alone cannot present a proposal or authorize a write. Synthetic state tests do not prove that the live terminal displayed a proposal or received a reply.
+The interactive host binds the view through its native runner. It installs the complete, immutable proposal as literal text in the normal transcript and requires a native render pass before confirming installation. Native formatting can wrap lines and expand tabs; the stored proposal is unchanged. A custom editor, a dialog, an overlay, a stopped or failed render, or a replaced session, runner, renderer, or transcript cannot confirm the proposal. Terminal control codes and blank proposals are rejected rather than silently changing the displayed proposal.
 
-Session shutdown, reload, disposal, context refresh, compaction, and tree navigation revoke saved state. The remaining integration must establish a fresh binding where needed. It must preserve original input through transforms and queues, reject restored or replaced contexts, and verify the complete proposal after rendering.
+A renderer stop or restart retires the captured view, even if the same renderer resumes. A fresh tool context can bind the current native view after a context reset; it cannot revive an earlier facade or reply. Retiring the view removes the registry’s rebuild callback.
 
-A future display check can establish that the complete proposal was installed in the owned transcript. It cannot prove that the user read it or establish human identity. This work does not contain arbitrary malicious JavaScript in the same process.
+A facade alone cannot authorize a write. The input and decision connections remain incomplete. Synthetic state tests do not prove that the live terminal displayed a proposal or received a reply.
+
+Session shutdown, reload, disposal, context refresh, compaction, and tree navigation revoke saved state. The remaining input integration must preserve original input through transforms and queues and reject restored or replaced contexts. The decision consumer must verify the complete native proposal before interpreting the reply.
+
+The display check establishes that the complete proposal was installed in the owned transcript. It cannot prove that the user read it or establish human identity. This work does not contain arbitrary malicious JavaScript in the same process.
