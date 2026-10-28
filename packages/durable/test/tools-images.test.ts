@@ -546,7 +546,7 @@ describe("createNodePhotonImages", () => {
 			DEFAULT_IMAGE_LIMITS,
 		);
 		expect(threaded).toEqual(inline);
-		expect(png).toEqual(copy);
+		expect(Buffer.compare(png, copy)).toBe(0);
 	}, 60_000);
 
 	it("prepares concurrent images, and starts a new worker after the idle one exited", async () => {
