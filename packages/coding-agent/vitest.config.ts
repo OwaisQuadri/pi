@@ -6,6 +6,7 @@ export default mergeConfig(
 	defineConfig({
 		test: {
 			globals: true,
+			setupFiles: ["./test/session-isolation-setup.ts"],
 			environment: "node",
 			testTimeout: 30000,
 			// Tests run offline by default; opt in with allowNetwork() from test/test-network-env.ts.
