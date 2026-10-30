@@ -3,7 +3,7 @@ import ignore from "ignore";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.ts";
 import { parseFrontmatter } from "../utils/frontmatter.ts";
-import { isPathWithin, resolvePath } from "../utils/paths.ts";
+import { canonicalizePath, isPathWithin, resolvePath } from "../utils/paths.ts";
 import type { ResourceDiagnostic } from "./diagnostics.ts";
 import { createSyntheticSourceInfo, getResourcePathKey, type SourceInfo } from "./source-info.ts";
 
