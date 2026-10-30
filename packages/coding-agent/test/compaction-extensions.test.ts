@@ -3,7 +3,7 @@ import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils
  * Tests for compaction extension events (before_compact / compact).
  */
 
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "@earendil-works/pi-agent-core";
@@ -32,7 +32,7 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
 	let capturedEvents: SessionEvent[];
 
 	beforeEach(async () => {
-		tempDir = join(tmpdir(), `pi-compaction-extensions-test-${Date.now()}`);
+		tempDir = mkdtempSync(join(tmpdir(), "pi-compaction-extensions-test-"));
 		mkdirSync(tempDir, { recursive: true });
 		capturedEvents = [];
 	});
@@ -97,7 +97,7 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
 			},
 		});
 
-		const sessionManager = SessionManager.create(tempDir);
+		const sessionManager = SessionManager.create(tempDir, join(tempDir, "sessions"));
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
 		settingsManager.applyOverrides({ compaction: { keepRecentTokens: 1 } });
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
