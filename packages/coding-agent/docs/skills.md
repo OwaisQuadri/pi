@@ -50,7 +50,7 @@ Arguments after `/skill:name` are appended to the loaded instructions as a user 
 /skill:pdf-tools extract report.pdf
 ```
 
-Set `disable-model-invocation: true` in frontmatter when a skill should be available only through its explicit command. The `enableSkillCommands` [setting](settings.md) controls whether skill commands appear in interactive command discovery; manually entered `/skill:name` commands still work.
+To make a skill available only through its explicit command, set it to `[U]` in `pi config`, or list its directory or file path in the global `userOnlySkills` [setting](settings.md). Pi stores paths inside the agent directory relative to it. Cycling `[U]` to `[ ]` removes the entry. If you remove a skill another way, its entry stays, and the skill returns as `[U]` when you add it again. `[U]` is available only in global mode of `pi config`. Pi ignores `disable-model-invocation` frontmatter; your setting decides. The `enableSkillCommands` [setting](settings.md) controls whether skill commands appear in interactive command discovery; manually entered `/skill:name` commands still work.
 
 <a id="choose-where-it-loads"></a>
 
@@ -76,7 +76,7 @@ The Agent Skills specification defines these fields:
 | `compatibility` | Environment requirements |
 | `metadata` | Additional key-value metadata |
 | `allowed-tools` | Experimental pre-approved tool list |
-| `disable-model-invocation` | Hide the skill from automatic model selection |
+| `disable-model-invocation` | Ignored by Pi; use the `userOnlySkills` setting instead |
 
 Names use lowercase letters, numbers, and hyphens, with no leading, trailing, or consecutive hyphens. They can contain at most 64 characters; descriptions can contain at most 1024.
 
