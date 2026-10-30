@@ -556,6 +556,42 @@ if (process.platform !== "win32") fs.chmodSync(piPath, 0o755);
 		expect(settingsManager.getGlobalSettings().extensions).toEqual(["+builtin:llama.cpp"]);
 	});
 
+	it("cycles skills through included, user-only, and excluded in config global mode", async () => {
+		vi.stubEnv("HOME", tempDir);
+		mkdirSync(join(agentDir, "skills", "demo"), { recursive: true });
+		writeFileSync(join(agentDir, "skills", "demo", "SKILL.md"), "---\nname: demo\ndescription: d\n---\nbody");
+		const settingsManager = SettingsManager.fromStorage(new InMemorySettingsStorage(), { projectTrusted: true });
+		const resolvedPaths = await new DefaultPackageManager({ cwd: projectDir, agentDir, settingsManager }).resolve();
+		const selector = new ConfigSelectorComponent(
+			{ global: resolvedPaths, project: resolvedPaths },
+			settingsManager,
+			projectDir,
+			agentDir,
+			() => {},
+			() => {},
+			() => {},
+			24,
+			"global",
+		);
+
+		const list = selector.getResourceList();
+		initTheme("dark");
+		const demoRow = () => list.render(120).find((line) => line.includes(" demo"));
+		expect(demoRow()).toContain("[x]");
+		expect(selector.render(120).join("\n")).toContain("cycle x/U/off");
+		list.handleInput(" ");
+		expect(settingsManager.getUserOnlySkills()).toEqual([join("skills", "demo")]);
+		expect(demoRow()).toContain("[U]");
+		list.handleInput(" ");
+		expect(settingsManager.getGlobalSettings().userOnlySkills).toBeUndefined();
+		expect(settingsManager.getGlobalSettings().skills).toEqual(["-skills/demo/SKILL.md"]);
+		list.handleInput(" ");
+		expect(settingsManager.getGlobalSettings().skills).toEqual(["+skills/demo/SKILL.md"]);
+		expect(settingsManager.getUserOnlySkills()).toEqual([]);
+		expect(demoRow()).toContain("[x]");
+		expect(demoRow()).not.toContain("user-only");
+	});
+
 	it("cycles project built-in extension overrides in config local mode", async () => {
 		const storage = new InMemorySettingsStorage();
 		storage.withLock("global", () => JSON.stringify({ extensions: ["-builtin:mcp"] }));
