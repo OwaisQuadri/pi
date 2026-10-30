@@ -7,8 +7,8 @@ import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ExtensionRunner } from "../src/core/extensions/runner.ts";
 import { DefaultResourceLoader, loadProjectContextFiles } from "../src/core/resource-loader.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
-import type { Skill } from "../src/core/skills.ts";
+import { InMemorySettingsStorage, SettingsManager } from "../src/core/settings-manager.ts";
+import { formatSkillsForPrompt, type Skill } from "../src/core/skills.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
 
 import { createModelRegistry } from "./model-runtime-test-utils.ts";
@@ -201,6 +201,70 @@ Skill content here.`,
 
 			const { skills } = loader.getSkills();
 			expect(skills.some((s) => s.name === "test-skill")).toBe(true);
+		});
+
+		it("should use global userOnlySkills paths instead of disable-model-invocation frontmatter", async () => {
+			const skillsDir = join(agentDir, "skills");
+			const write = (path: string, name: string) => {
+				mkdirSync(join(path, ".."), { recursive: true });
+				writeFileSync(path, `---\nname: ${name}\ndescription: d\ndisable-model-invocation: true\n---\nbody`);
+			};
+			write(join(skillsDir, "frontmatter-hidden", "SKILL.md"), "frontmatter-hidden");
+			write(join(skillsDir, "dir-name", "SKILL.md"), "other-name");
+			write(join(skillsDir, "single.md"), "single");
+			write(join(skillsDir, "project-hidden", "SKILL.md"), "project-hidden");
+			const storage = new InMemorySettingsStorage();
+			storage.withLock("global", () =>
+				JSON.stringify({ userOnlySkills: [join(skillsDir, "dir-name"), join("skills", "single.md")] }),
+			);
+			storage.withLock("project", () =>
+				JSON.stringify({ userOnlySkills: [join(skillsDir, "project-hidden", "SKILL.md")] }),
+			);
+			const settingsManager = SettingsManager.fromStorage(storage);
+
+			const loader = new DefaultResourceLoader({
+				cwd,
+				agentDir,
+				settingsManager,
+				skillsOverride: (base) => base,
+			});
+			await loader.reload();
+
+			const skills = loader.getSkills().skills.filter((s) => s.filePath.startsWith(agentDir));
+			expect(Object.fromEntries(skills.map((s) => [s.name, s.disableModelInvocation]))).toEqual({
+				"frontmatter-hidden": false,
+				"other-name": true,
+				single: true,
+				"project-hidden": false,
+			});
+			const prompt = formatSkillsForPrompt(skills);
+			expect(prompt).toContain("<name>frontmatter-hidden</name>");
+			expect(prompt).not.toContain("<name>other-name</name>");
+			expect(prompt).not.toContain("<name>single</name>");
+		});
+
+		it("should keep disableModelInvocation set by skillsOverride", async () => {
+			const filePath = join(agentDir, "override", "SKILL.md");
+			const loader = new DefaultResourceLoader({
+				cwd,
+				agentDir,
+				skillsOverride: () => ({
+					skills: [
+						{
+							name: "override",
+							description: "d",
+							filePath,
+							baseDir: join(agentDir, "override"),
+							sourceInfo: createSyntheticSourceInfo(filePath, { source: "sdk" }),
+							disableModelInvocation: true,
+						},
+					],
+					diagnostics: [],
+				}),
+			});
+			await loader.reload();
+
+			expect(loader.getSkills().skills[0]?.disableModelInvocation).toBe(true);
 		});
 
 		it("should ignore extra markdown files in auto-discovered skill dirs", async () => {
