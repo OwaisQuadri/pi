@@ -23,7 +23,7 @@ describe("loadEntriesFromFile", () => {
 	let tempDir: string;
 
 	beforeEach(() => {
-		tempDir = join(tmpdir(), `session-test-${Date.now()}`);
+		tempDir = mkdtempSync(join(tmpdir(), "session-test-"));
 		mkdirSync(tempDir, { recursive: true });
 	});
 
@@ -193,7 +193,7 @@ describe("findMostRecentSession", () => {
 	let tempDir: string;
 
 	beforeEach(() => {
-		tempDir = join(tmpdir(), `session-test-${Date.now()}`);
+		tempDir = mkdtempSync(join(tmpdir(), "session-test-"));
 		mkdirSync(tempDir, { recursive: true });
 	});
 
@@ -285,7 +285,7 @@ describe("SessionManager custom flat session directory", () => {
 	let projectB: string;
 
 	beforeEach(() => {
-		tempDir = join(tmpdir(), `session-test-${Date.now()}`);
+		tempDir = mkdtempSync(join(tmpdir(), "session-test-"));
 		projectA = join(tempDir, "project-a");
 		projectB = join(tempDir, "project-b");
 		mkdirSync(projectA, { recursive: true });
@@ -359,7 +359,7 @@ describe("SessionManager.setSessionFile with corrupted files", () => {
 	let tempDir: string;
 
 	beforeEach(() => {
-		tempDir = join(tmpdir(), `session-test-${Date.now()}`);
+		tempDir = mkdtempSync(join(tmpdir(), "session-test-"));
 		mkdirSync(tempDir, { recursive: true });
 	});
 

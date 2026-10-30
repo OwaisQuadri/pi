@@ -1,9 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, parse } from "node:path";
 import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
+import { getAgentDir } from "../../src/config.ts";
 import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionFromServices,
@@ -41,8 +42,7 @@ describe("AgentSessionRuntime characterization", () => {
 		extensionFactory: ExtensionFactory,
 		options?: { cwd?: string; bootstrapModel?: boolean; bootstrapThinkingLevel?: boolean },
 	) {
-		const tempDir =
-			options?.cwd ?? join(tmpdir(), `pi-runtime-suite-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		const tempDir = options?.cwd ?? mkdtempSync(join(tmpdir(), "pi-runtime-suite-"));
 		mkdirSync(tempDir, { recursive: true });
 
 		const faux = registerFauxProvider({
@@ -107,7 +107,7 @@ describe("AgentSessionRuntime characterization", () => {
 		const runtime = await createAgentSessionRuntime(createRuntime, {
 			cwd: tempDir,
 			agentDir: tempDir,
-			sessionManager: SessionManager.create(tempDir),
+			sessionManager: SessionManager.create(tempDir, join(tempDir, "sessions")),
 		});
 		await runtime.session.bindExtensions({});
 
@@ -213,8 +213,10 @@ describe("AgentSessionRuntime characterization", () => {
 		]);
 	});
 
-	it("preserves an existing session when importing a file with the same name", async () => {
+	it("imports colliding session files without writing to the default sessions root", async () => {
 		const { runtime, tempDir } = await createRuntimeForTest(() => {});
+		const defaultSessionsRoot = join(getAgentDir(), "sessions");
+		expect(existsSync(defaultSessionsRoot)).toBe(false);
 		const sessionDir = runtime.session.sessionManager.getSessionDir();
 		const importDir = join(tempDir, "import");
 		const filename = "collision.jsonl";
@@ -241,6 +243,8 @@ describe("AgentSessionRuntime characterization", () => {
 
 		await runtime.importFromJsonl(importPath);
 
+		expect(existsSync(defaultSessionsRoot)).toBe(false);
+		expect(runtime.session.sessionFile).toBe(join(sessionDir, "collision-1.jsonl"));
 		expect(readFileSync(storedPath, "utf8")).toBe(storedSession);
 		expect(runtime.session.sessionFile).not.toBe(storedPath);
 		expect(readFileSync(runtime.session.sessionFile!, "utf8")).toContain('"id":"imported"');
@@ -315,9 +319,10 @@ describe("AgentSessionRuntime characterization", () => {
 		expect(runtime.session.sessionFile).toBe(originalSessionFile);
 
 		events.length = 0;
-		const otherDir = join(tmpdir(), `pi-runtime-other-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		const otherDir = mkdtempSync(join(tmpdir(), "pi-runtime-other-"));
 		mkdirSync(otherDir, { recursive: true });
-		const otherSession = SessionManager.create(otherDir);
+		cleanups.push(() => rmSync(otherDir, { recursive: true, force: true }));
+		const otherSession = SessionManager.create(otherDir, join(otherDir, "sessions"));
 		otherSession.appendMessage({ role: "user", content: [{ type: "text", text: "other" }], timestamp: Date.now() });
 		const otherSessionFile = otherSession.getSessionFile();
 		cancelReason = "resume";
@@ -429,7 +434,7 @@ describe("AgentSessionRuntime characterization", () => {
 	});
 
 	it("duplicates the current active branch in-memory when forking at the current position", async () => {
-		const tempDir = join(tmpdir(), `pi-runtime-suite-in-memory-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		const tempDir = mkdtempSync(join(tmpdir(), "pi-runtime-suite-in-memory-"));
 		mkdirSync(tempDir, { recursive: true });
 
 		const faux = registerFauxProvider({
@@ -546,8 +551,8 @@ describe("AgentSessionRuntime characterization", () => {
 	});
 
 	it("updates the runtime session cwd on cross-cwd session replacement", async () => {
-		const firstDir = join(tmpdir(), `pi-runtime-cwd-a-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-		const secondDir = join(tmpdir(), `pi-runtime-cwd-b-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		const firstDir = mkdtempSync(join(tmpdir(), "pi-runtime-cwd-a-"));
+		const secondDir = mkdtempSync(join(tmpdir(), "pi-runtime-cwd-b-"));
 		mkdirSync(firstDir, { recursive: true });
 		mkdirSync(secondDir, { recursive: true });
 		const { runtime, faux, tempDir } = await createRuntimeForTest(() => {}, { cwd: firstDir });
@@ -603,10 +608,11 @@ describe("AgentSessionRuntime characterization", () => {
 		const otherRuntime = await createAgentSessionRuntime(createOtherRuntime, {
 			cwd: secondDir,
 			agentDir: tempDir,
-			sessionManager: SessionManager.create(secondDir),
+			sessionManager: SessionManager.create(secondDir, join(secondDir, "sessions")),
 		});
 		cleanups.push(async () => {
 			await otherRuntime.dispose();
+			rmSync(secondDir, { recursive: true, force: true });
 		});
 		await otherRuntime.session.prompt("other");
 		const otherSessionFile = otherRuntime.session.sessionFile!;
@@ -676,7 +682,7 @@ describe("AgentSessionRuntime characterization", () => {
 		const otherRuntime = await createAgentSessionRuntime(createOtherRuntime, {
 			cwd: otherDir,
 			agentDir: tempDir,
-			sessionManager: SessionManager.create(otherDir),
+			sessionManager: SessionManager.create(otherDir, join(otherDir, "sessions")),
 		});
 		cleanups.push(async () => {
 			await otherRuntime.dispose();
