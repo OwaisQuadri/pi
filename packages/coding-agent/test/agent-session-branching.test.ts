@@ -7,7 +7,7 @@
  * - getUserMessagesForForking returns correct entries
  */
 
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getModel } from "@earendil-works/pi-ai/compat";
@@ -31,7 +31,7 @@ describe.skipIf(!API_KEY)("AgentSession forking", () => {
 	let sessionManager: SessionManager;
 
 	beforeEach(() => {
-		tempDir = join(tmpdir(), `pi-branching-test-${Date.now()}`);
+		tempDir = mkdtempSync(join(tmpdir(), "pi-branching-test-"));
 		mkdirSync(tempDir, { recursive: true });
 	});
 
@@ -46,7 +46,9 @@ describe.skipIf(!API_KEY)("AgentSession forking", () => {
 
 	async function createSession(noSession: boolean = false) {
 		const model = getModel("anthropic", "claude-sonnet-4-5")!;
-		sessionManager = noSession ? SessionManager.inMemory(tempDir) : SessionManager.create(tempDir);
+		sessionManager = noSession
+			? SessionManager.inMemory(tempDir)
+			: SessionManager.create(tempDir, join(tempDir, "sessions"));
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: API_KEY! }));
 
