@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { describe, expect, it } from "vitest";
@@ -481,7 +481,7 @@ describe("createBranchedSession", () => {
 	});
 
 	it("does not duplicate entries when forking from before the first user message", () => {
-		const tempDir = join(tmpdir(), `session-fork-dedup-${Date.now()}`);
+		const tempDir = mkdtempSync(join(tmpdir(), "session-fork-dedup-"));
 		mkdirSync(tempDir, { recursive: true });
 
 		try {
@@ -513,7 +513,7 @@ describe("createBranchedSession", () => {
 	});
 
 	it("preserves tool and summary usage across a file-backed reload", () => {
-		const tempDir = join(tmpdir(), `session-usage-roundtrip-${Date.now()}`);
+		const tempDir = mkdtempSync(join(tmpdir(), "session-usage-roundtrip-"));
 		mkdirSync(tempDir, { recursive: true });
 
 		try {
@@ -559,7 +559,7 @@ describe("createBranchedSession", () => {
 	});
 
 	it("writes file immediately when forking at a user message", () => {
-		const tempDir = join(tmpdir(), `session-fork-with-user-${Date.now()}`);
+		const tempDir = mkdtempSync(join(tmpdir(), "session-fork-with-user-"));
 		mkdirSync(tempDir, { recursive: true });
 
 		try {
