@@ -8,7 +8,7 @@ import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils
  * - Compaction entry is saved to session file
  */
 
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "@earendil-works/pi-agent-core";
@@ -29,7 +29,7 @@ describe.skipIf(!API_KEY)("AgentSession compaction e2e", () => {
 
 	beforeEach(async () => {
 		// Create temp directory for session files
-		tempDir = join(tmpdir(), `pi-compaction-test-${Date.now()}`);
+		tempDir = mkdtempSync(join(tmpdir(), "pi-compaction-test-"));
 		mkdirSync(tempDir, { recursive: true });
 
 		// Track events
@@ -57,7 +57,7 @@ describe.skipIf(!API_KEY)("AgentSession compaction e2e", () => {
 			},
 		});
 
-		sessionManager = inMemory ? SessionManager.inMemory() : SessionManager.create(tempDir);
+		sessionManager = inMemory ? SessionManager.inMemory() : SessionManager.create(tempDir, join(tempDir, "sessions"));
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
 		// Use minimal keepRecentTokens so small test conversations have something to summarize
 		settingsManager.applyOverrides({ compaction: { keepRecentTokens: 1 } });
