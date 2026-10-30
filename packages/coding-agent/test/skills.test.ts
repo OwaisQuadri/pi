@@ -2,7 +2,13 @@ import { homedir } from "os";
 import { join, resolve } from "path";
 import { describe, expect, it } from "vitest";
 import type { ResourceDiagnostic } from "../src/core/diagnostics.ts";
-import { formatSkillsForPrompt, loadSkills, loadSkillsFromDir, type Skill } from "../src/core/skills.ts";
+import {
+	formatSkillsForPrompt,
+	getUserOnlySkillKey,
+	loadSkills,
+	loadSkillsFromDir,
+	type Skill,
+} from "../src/core/skills.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
 
 const fixturesDir = resolve(__dirname, "fixtures/skills");
@@ -195,7 +201,7 @@ describe("skills", () => {
 			expect(skills[0].name).toBe("valid-skill");
 		});
 
-		it("should parse disable-model-invocation frontmatter field", () => {
+		it("should ignore disable-model-invocation frontmatter field", () => {
 			const { skills, diagnostics } = loadSkillsFromDir({
 				dir: join(fixturesDir, "disable-model-invocation"),
 				source: "test",
@@ -203,7 +209,7 @@ describe("skills", () => {
 
 			expect(skills).toHaveLength(1);
 			expect(skills[0].name).toBe("disable-model-invocation");
-			expect(skills[0].disableModelInvocation).toBe(true);
+			expect(skills[0].disableModelInvocation).toBe(false);
 			// Should not warn about unknown field
 			expect(diagnostics.some((d: ResourceDiagnostic) => d.message.includes("unknown frontmatter field"))).toBe(
 				false,
@@ -218,6 +224,18 @@ describe("skills", () => {
 
 			expect(skills).toHaveLength(1);
 			expect(skills[0].disableModelInvocation).toBe(false);
+		});
+	});
+
+	describe("getUserOnlySkillKey", () => {
+		it("stores paths inside the agent directory relative to it", () => {
+			const agentDir = resolve(fixturesDir);
+			expect(getUserOnlySkillKey(join(agentDir, "valid-skill", "SKILL.md"), agentDir)).toBe("valid-skill");
+			expect(getUserOnlySkillKey(join(agentDir, "..hidden"), agentDir)).toBe("..hidden");
+			expect(getUserOnlySkillKey("valid-skill", agentDir)).toBe("valid-skill");
+			expect(getUserOnlySkillKey(join(agentDir, "..", "outside"), agentDir)).toBe(
+				resolve(agentDir, "..", "outside"),
+			);
 		});
 	});
 
