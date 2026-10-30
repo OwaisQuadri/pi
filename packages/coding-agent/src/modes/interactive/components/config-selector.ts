@@ -18,6 +18,7 @@ import {
 import { CONFIG_DIR_NAME } from "../../../config.ts";
 import type { PathMetadata, ResolvedPaths, ResolvedResource } from "../../../core/package-manager.ts";
 import type { PackageSource, SettingsManager } from "../../../core/settings-manager.ts";
+import { getUserOnlySkillKey } from "../../../core/skills.ts";
 import { BUILTIN_PATH_PREFIX } from "../../../core/source-info.ts";
 import { canonicalizePath, isLocalPath, resolvePath } from "../../../utils/paths.ts";
 import { theme } from "../theme/theme.ts";
@@ -193,10 +194,12 @@ type FlatEntry =
 class ConfigSelectorHeader implements Component {
 	private writeScope: ConfigWriteScope;
 	private projectModeAvailable: boolean;
+	private isSkillSelected: () => boolean;
 
-	constructor(writeScope: ConfigWriteScope, projectModeAvailable: boolean) {
+	constructor(writeScope: ConfigWriteScope, projectModeAvailable: boolean, isSkillSelected: () => boolean) {
 		this.writeScope = writeScope;
 		this.projectModeAvailable = projectModeAvailable;
+		this.isSkillSelected = isSkillSelected;
 	}
 
 	setWriteScope(writeScope: ConfigWriteScope): void {
@@ -210,7 +213,9 @@ class ConfigSelectorHeader implements Component {
 		const sep = theme.fg("muted", " · ");
 		const switchHint = this.projectModeAvailable ? keyHint("tui.input.tab", "switch mode") + sep : "";
 		const actionHint =
-			this.writeScope === "project" ? rawKeyHint("space", "cycle inherit/+/-") : rawKeyHint("space", "toggle");
+			this.writeScope === "project"
+				? rawKeyHint("space", "cycle inherit/+/-")
+				: rawKeyHint("space", this.isSkillSelected() ? "cycle x/U/off" : "toggle");
 		const hint = switchHint + actionHint + sep + rawKeyHint("esc", "close");
 		const spacing = Math.max(1, width - visibleWidth(title) - visibleWidth(hint));
 		const scopeHint =
@@ -237,6 +242,8 @@ class ResourceList implements Component, Focusable {
 	private agentDir: string;
 	private writeScope: ConfigWriteScope;
 	private inheritedEnabledByKey: Map<string, boolean>;
+	private userOnlySkillKeys: Set<string>;
+	private skillKeyByPath = new Map<string, string>();
 
 	public onCancel?: () => void;
 	public onExit?: () => void;
@@ -266,6 +273,9 @@ class ResourceList implements Component, Focusable {
 		this.agentDir = agentDir;
 		this.writeScope = writeScope;
 		this.inheritedEnabledByKey = this.buildInheritedEnabledMap(groupsByScope.global);
+		this.userOnlySkillKeys = new Set(
+			settingsManager.getUserOnlySkills().map((path) => getUserOnlySkillKey(path, agentDir)),
+		);
 		this.searchInput = new Input();
 		// 8 lines of chrome: top spacer + top border + spacer + header (2 lines) + spacer + bottom spacer + bottom border
 		const chrome = 8;
@@ -526,11 +536,26 @@ class ResourceList implements Component, Focusable {
 			return state === "inherit" ? this.getInheritedEnabled(item) : state === "load";
 		}
 
+		const key = item.resourceType === "skills" && item.enabled ? this.getSkillKey(item) : undefined;
+		if (key !== undefined && !this.userOnlySkillKeys.has(key)) {
+			this.settingsManager.setUserOnlySkills([...this.settingsManager.getUserOnlySkills(), key]);
+			this.userOnlySkillKeys.add(key);
+			return true;
+		}
+
 		const enabled = !item.enabled;
 		if (item.metadata.origin === "top-level") {
 			this.toggleTopLevelResource(item, enabled);
 		} else {
 			this.togglePackageResource(item, enabled);
+		}
+		if (key !== undefined) {
+			this.settingsManager.setUserOnlySkills(
+				this.settingsManager
+					.getUserOnlySkills()
+					.filter((entry) => getUserOnlySkillKey(entry, this.agentDir) !== key),
+			);
+			this.userOnlySkillKeys.delete(key);
 		}
 		return enabled;
 	}
@@ -649,15 +674,35 @@ class ResourceList implements Component, Focusable {
 			if (state === "unload") return theme.fg("warning", "[-]");
 			return theme.fg("dim", item.enabled ? "[x]" : "[ ]");
 		}
-		return item.enabled ? theme.fg("success", "[x]") : theme.fg("dim", "[ ]");
+		if (!item.enabled) return theme.fg("dim", "[ ]");
+		return this.isUserOnlySkill(item) ? theme.fg("warning", "[U]") : theme.fg("success", "[x]");
+	}
+
+	private isUserOnlySkill(item: ResourceItem): boolean {
+		return item.resourceType === "skills" && this.userOnlySkillKeys.has(this.getSkillKey(item));
+	}
+
+	getSelectedItem(): ResourceItem | undefined {
+		const entry = this.filteredItems[this.selectedIndex];
+		return entry?.type === "item" ? entry.item : undefined;
+	}
+
+	private getSkillKey(item: ResourceItem): string {
+		let key = this.skillKeyByPath.get(item.path);
+		if (key === undefined) {
+			key = getUserOnlySkillKey(item.path, this.agentDir);
+			this.skillKeyByPath.set(item.path, key);
+		}
+		return key;
 	}
 
 	private getItemSuffix(item: ResourceItem): string {
 		if (this.writeScope !== "project") return "";
+		const userOnly = item.enabled && this.isUserOnlySkill(item) ? theme.fg("muted", "  user-only") : "";
 		const state = this.getProjectOverrideState(item);
-		if (state === "load") return theme.fg("muted", "  project load");
+		if (state === "load") return theme.fg("muted", "  project load") + userOnly;
 		if (state === "unload") return theme.fg("muted", "  project unload");
-		return this.isInheritedGlobalItem(item) ? theme.fg("dim", "  inherited global") : "";
+		return (this.isInheritedGlobalItem(item) ? theme.fg("dim", "  inherited global") : "") + userOnly;
 	}
 
 	private isDimmedItem(item: ResourceItem): boolean {
@@ -910,7 +955,11 @@ export class ConfigSelectorComponent extends Container implements Focusable {
 		this.addChild(new Spacer(1));
 		this.addChild(new DynamicBorder());
 		this.addChild(new Spacer(1));
-		this.header = new ConfigSelectorHeader(this.writeScope, projectModeAvailable);
+		this.header = new ConfigSelectorHeader(
+			this.writeScope,
+			projectModeAvailable,
+			() => this.resourceList.getSelectedItem()?.resourceType === "skills",
+		);
 		this.addChild(this.header);
 		this.addChild(new Spacer(1));
 

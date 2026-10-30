@@ -1168,6 +1168,16 @@ export class SettingsManager {
 		});
 	}
 
+	getUserOnlySkills(): string[] {
+		return [...(this.globalSettings.userOnlySkills ?? [])];
+	}
+
+	setUserOnlySkills(paths: string[]): void {
+		this.globalSettings.userOnlySkills = paths.length > 0 ? paths : undefined;
+		this.markModified("userOnlySkills");
+		this.save();
+	}
+
 	getEnableSkillCommands(): boolean {
 		return this.settings.enableSkillCommands ?? SETTINGS_DEFAULTS.enableSkillCommands;
 	}
