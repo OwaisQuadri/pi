@@ -397,6 +397,13 @@
       },
       "description": "Local theme file paths or directories."
     },
+    "userOnlySkills": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Skill paths (a SKILL.md file, its directory, or a single-file .md skill; absolute or relative to the agent directory) hidden from the model's skill list but still available as /skill:name commands. Global only. Skill frontmatter cannot hide a skill."
+    },
     "enableSkillCommands": {
       "type": "boolean",
       "description": "Register skills as /skill:name commands.",
