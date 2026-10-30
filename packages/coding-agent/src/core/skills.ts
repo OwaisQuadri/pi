@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "fs";
 import ignore from "ignore";
-import { basename, dirname, join, relative, resolve, sep } from "path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.ts";
 import { parseFrontmatter } from "../utils/frontmatter.ts";
 import { isPathWithin, resolvePath } from "../utils/paths.ts";
@@ -338,10 +338,19 @@ function loadSkillFromFile(
 			filePath,
 			baseDir: skillDir,
 			sourceInfo: createSkillSourceInfo(filePath, skillDir, source),
-			disableModelInvocation: frontmatter["disable-model-invocation"] === true,
+			disableModelInvocation: false,
 		},
 		diagnostics,
 	};
+}
+
+export function getUserOnlySkillKey(path: string, agentDir: string): string {
+	const canonical = canonicalizePath(resolve(agentDir, path));
+	const skillPath = basename(canonical) === "SKILL.md" ? dirname(canonical) : canonical;
+	const relativePath = relative(canonicalizePath(agentDir), skillPath);
+	const isInside =
+		relativePath !== "" && relativePath !== ".." && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath);
+	return isInside ? relativePath : skillPath;
 }
 
 /**

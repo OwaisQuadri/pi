@@ -329,6 +329,12 @@ export const SettingsSchema = Type.Object(
 			Type.Array(Type.String(), { description: "Local prompt template file paths or directories." }),
 		),
 		themes: Type.Optional(Type.Array(Type.String(), { description: "Local theme file paths or directories." })),
+		userOnlySkills: Type.Optional(
+			Type.Array(Type.String(), {
+				description:
+					"Skill paths (a SKILL.md file, its directory, or a single-file .md skill; absolute or relative to the agent directory) hidden from the model's skill list but still available as /skill:name commands. Global only. Skill frontmatter cannot hide a skill.",
+			}),
+		),
 		enableSkillCommands: Type.Optional(
 			Type.Boolean({
 				description: "Register skills as /skill:name commands.",
