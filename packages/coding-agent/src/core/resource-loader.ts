@@ -35,7 +35,7 @@ import type { PromptTemplate } from "./prompt-templates.ts";
 import { loadPromptTemplates } from "./prompt-templates.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import type { Skill } from "./skills.ts";
-import { loadSkills } from "./skills.ts";
+import { getUserOnlySkillKey, loadSkills } from "./skills.ts";
 import {
 	BUILTIN_PATH_PREFIX,
 	createSourceInfo,
@@ -888,6 +888,12 @@ export class DefaultResourceLoader implements ResourceLoader {
 				skillPaths,
 				includeDefaults: false,
 			});
+		}
+		const userOnlySkills = new Set(
+			this.settingsManager.getUserOnlySkills().map((path) => getUserOnlySkillKey(path, this.agentDir)),
+		);
+		for (const skill of skillsResult.skills) {
+			skill.disableModelInvocation = userOnlySkills.has(getUserOnlySkillKey(skill.filePath, this.agentDir));
 		}
 		const resolvedSkills = this.skillsOverride ? this.skillsOverride(skillsResult) : skillsResult;
 		this.skills = resolvedSkills.skills.map((skill) => ({
