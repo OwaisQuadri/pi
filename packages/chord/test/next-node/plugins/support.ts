@@ -29,7 +29,12 @@ export async function tempRoot(fixtures: readonly string[] = []): Promise<string
 	const root = await mkdtemp(join(tmpdir(), "chord-plugins-"));
 	made.push(root);
 	for (const name of fixtures) await cp(join(FIXTURES, name), join(root, name), { recursive: true });
+	await outlastReplayedFileEvents();
 	return root;
+}
+
+function outlastReplayedFileEvents(): Promise<void> {
+	return new Promise((done) => setTimeout(done, 200));
 }
 
 /** Writes `files` (relative path to text) into `dir`, creating directories. */
@@ -50,6 +55,7 @@ export async function writePlugin(
 ): Promise<string> {
 	const path = join(root, dir);
 	await writeFiles(path, { "package.json": JSON.stringify({ name, type: "module", ...manifest }), ...files });
+	await outlastReplayedFileEvents();
 	return path;
 }
 
