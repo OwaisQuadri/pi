@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { closeSync, openSync, readSync, statSync } from "node:fs";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const [kind, fixture, modulePath, binary] = process.argv.slice(2);
 const size = statSync(fixture).size;
@@ -14,13 +14,15 @@ const { loadEntriesFromFile } = await import(pathToFileURL(modulePath).href);
 let entries;
 let worker;
 let stopped;
-if (kind === "node") {
+if (kind === "node" || kind === "node-child") {
   entries = loadEntriesFromFile(fixture);
   const bytes = entries.reduce((sum, entry) => sum + Buffer.byteLength(entry.message?.content?.[0]?.text ?? ""), 0);
   globalThis.__retainedEntries = entries;
-  console.log(`READY ${entries.length} ${bytes} 0`);
+  console.log(`READY ${entries.length} ${bytes}${kind === "node-child" ? "" : " 0"}`);
 } else {
-  worker = spawn(binary, [fixture], { stdio: ["ignore", "pipe", "inherit"] });
+  const executable = kind === "node-worker" ? process.execPath : binary;
+  const args = kind === "node-worker" ? [fileURLToPath(import.meta.url), "node-child", fixture, modulePath] : [fixture];
+  worker = spawn(executable, args, { stdio: ["ignore", "pipe", "inherit"] });
   stopped = new Promise((resolve, reject) => {
     worker.once("exit", resolve);
     worker.once("error", reject);

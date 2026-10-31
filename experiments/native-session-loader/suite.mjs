@@ -132,28 +132,28 @@ try {
     workload = await largeFixture();
   }
   console.log(suppliedSession ? "Workload: snapshot of supplied session file (source untouched)" : "Workload: 40,000 messages, 40,960,000 text bytes (synthetic)");
-  const samples = { node: [], [kind]: [] };
+  const samples = { "node-worker": [], [kind]: [] };
   for (let round = 0; round < 5; round++) {
-    const order = round % 2 ? [kind, "node"] : ["node", kind];
+    const order = round % 2 ? [kind, "node-worker"] : ["node-worker", kind];
     for (const mode of order) {
       const result = await sample(mode, workload);
       samples[mode].push(result);
       console.log(`round=${round + 1} ${mode} count=${result.count} text_bytes=${result.bytes} host_KiB=${result.hostKiB} worker_KiB=${result.workerKiB} aggregate_RSS_KiB=${result.aggregateKiB} ready_ms=${result.readyMs.toFixed(0)}`);
     }
-    const [baseline, candidate] = [samples.node.at(-1), samples[kind].at(-1)];
+    const [baseline, candidate] = [samples["node-worker"].at(-1), samples[kind].at(-1)];
     if (!baseline.count || !baseline.bytes) throw new Error("Workload contained no retained message text");
     if (baseline.count !== candidate.count || baseline.bytes !== candidate.bytes) throw new Error(`Round ${round + 1} results disagree`);
   }
-  console.log("\n| Mode | Samples | Median aggregate RSS KiB | Range KiB | Median ready ms | Range ms |");
+  console.log("\n| Worker | Samples | Median worker RSS KiB | Range KiB | Median ready ms | Range ms |");
   console.log("|---|---:|---:|---:|---:|---:|");
-  for (const mode of ["node", kind]) {
+  for (const mode of ["node-worker", kind]) {
     const values = samples[mode];
-    console.log(`| ${mode} | ${values.length} | ${median(values.map((entry) => entry.aggregateKiB))} | ${range(values.map((entry) => entry.aggregateKiB))} | ${median(values.map((entry) => Math.round(entry.readyMs)))} | ${range(values.map((entry) => Math.round(entry.readyMs)))} |`);
+    console.log(`| ${mode} | ${values.length} | ${median(values.map((entry) => entry.workerKiB))} | ${range(values.map((entry) => entry.workerKiB))} | ${median(values.map((entry) => Math.round(entry.readyMs)))} | ${range(values.map((entry) => Math.round(entry.readyMs)))} |`);
   }
-  const factor = median(samples.node.map((entry) => entry.aggregateKiB)) / median(samples[kind].map((entry) => entry.aggregateKiB));
-  console.log(`Memory ratio: ${factor.toFixed(2)}× (installed JavaScript loader / Node host plus ${kind} worker)`);
-  console.log("Native results stay in the worker; the Node host holds only a summary. This is not a functional loader replacement.");
-  console.log("All outputs agreed; 0 failed cases; build time excluded. Aggregate RSS counts shared pages in each process. This does not measure an entire Pi session or prove its 8× goal.");
+  const factor = median(samples["node-worker"].map((entry) => entry.workerKiB)) / median(samples[kind].map((entry) => entry.workerKiB));
+  console.log(`Worker memory ratio: ${factor.toFixed(2)}× (JavaScript / ${kind}; host excluded)`);
+  console.log("Both workers retain their parsed entries; the Node host holds only a summary. This is not a functional loader replacement.");
+  console.log("All outputs agreed; 0 failed cases; build time excluded. Worker RSS can include shared pages. This does not measure an entire Pi session or prove its 8× goal.");
 } finally {
   for (const path of ownedFiles) unlinkSync(path);
   rmdirSync(directory);
