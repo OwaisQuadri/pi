@@ -11,7 +11,12 @@ if (kind === "node") {
   let bytes = 0;
   for await (const line of createInterface({ input: createReadStream(fixture) })) {
     if (!line.trim()) continue;
-    const entry = JSON.parse(line);
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      throw new Error("Session contains invalid JSON");
+    }
     bytes += Buffer.byteLength(entry.message?.content?.[0]?.text ?? "");
     entries.push(entry);
   }
