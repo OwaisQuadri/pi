@@ -47,6 +47,11 @@ fn run(path: [*:0]const u8) !void {
             if (err == error.OutOfMemory) return err;
             continue;
         };
+        if (entry == .null or
+            (entry == .bool and !entry.bool) or
+            (entry == .integer and entry.integer == 0) or
+            (entry == .float and entry.float == 0) or
+            (entry == .string and entry.string.len == 0)) continue;
         text_bytes += textBytes(entry);
         try entries.append(allocator, entry);
     }

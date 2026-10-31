@@ -17,6 +17,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let Ok(entry) = serde_json::from_str::<serde_json::Value>(&line) else {
             continue;
         };
+        match &entry {
+            serde_json::Value::Null | serde_json::Value::Bool(false) => continue,
+            serde_json::Value::Number(value) if value.as_f64() == Some(0.0) => continue,
+            serde_json::Value::String(value) if value.is_empty() => continue,
+            _ => {}
+        }
         text_bytes += entry["message"]["content"][0]["text"]
             .as_str()
             .map_or(0, str::len);

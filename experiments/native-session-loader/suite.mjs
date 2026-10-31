@@ -1,5 +1,5 @@
 import { spawn, execFileSync } from "node:child_process";
-import { createWriteStream, mkdtempSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, createWriteStream, mkdtempSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -43,7 +43,7 @@ function residentKiB(pid) {
 
 async function sample(mode, path) {
   const started = performance.now();
-  const child = spawn(process.execPath, [join(root, "reference.mjs"), mode, path, modulePath, binary], { stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [join(root, "reference.mjs"), mode, path, modulePath, binary], { stdio: ["ignore", "pipe", "pipe"], detached: true });
   let stderr = "";
   let stdout = "";
   child.stderr.on("data", (data) => { stderr += String(data).slice(0, 4096); });
@@ -60,18 +60,26 @@ async function sample(mode, path) {
     if (stdout.includes("\n")) resolveReady(stdout.split("\n", 1)[0]);
   });
   child.once("exit", () => { if (!stdout.includes("\n")) rejectReady(new Error(`No ready output; exit: ${stderr}`)); });
-  const timeout = setTimeout(() => { child.kill(); rejectReady(new Error(`Timed out waiting for ${mode}: ${stderr}`)); }, 30000);
+  let rejectTimeout;
+  const deadline = new Promise((_, reject) => { rejectTimeout = reject; });
+  const timeout = setTimeout(() => {
+    try { process.kill(-child.pid, "SIGKILL"); } catch {}
+    rejectTimeout(new Error(`Timed out running ${mode}: ${stderr}`));
+  }, 30000);
   try {
-    const line = await ready;
+    const line = await Promise.race([ready, deadline]);
     const match = /^READY (\d+) (\d+) (\d+)$/.exec(line);
     if (!match) throw new Error(`Invalid ${mode} output: ${line}`);
     const readyMs = performance.now() - started;
     const workerPid = Number(match[3]);
     const hostKiB = residentKiB(child.pid);
     const workerKiB = workerPid ? residentKiB(workerPid) : 0;
-    const result = await exit;
+    const result = await Promise.race([exit, deadline]);
     if (result.code !== 0) throw new Error(`${mode} exited ${result.code} (${result.signal ?? "no signal"}): ${stderr}`);
     return { count: Number(match[1]), bytes: Number(match[2]), hostKiB, workerKiB, aggregateKiB: hostKiB + workerKiB, readyMs };
+  } catch (error) {
+    try { process.kill(-child.pid, "SIGKILL"); } catch {}
+    throw error;
   } finally {
     clearTimeout(timeout);
   }
@@ -91,6 +99,7 @@ try {
     ["valid, malformed, blank, Unicode", fixture("valid.jsonl", '{"type":"session","id":"fixture"}\n{"type":"message","message":{"content":[{"type":"text","text":"hello"}]}}\ninvalid json\n\n{"type":"message","message":{"content":[{"type":"text","text":"🌙"}]}}\n'), 3, 9],
     ["invalid header", fixture("bad-header.jsonl", '{"type":"message","id":"wrong"}\n{"type":"session","id":"late"}\n'), 0, 0],
     ["parsed scalar before header", fixture("scalar.jsonl", '7\n{"type":"session","id":"late"}\n'), 0, 0],
+    ["falsey values after header", fixture("falsey.jsonl", '{"type":"session","id":"fixture"}\nnull\nfalse\n0\n""\n{"type":"message","message":{"content":[{"type":"text","text":"ok"}]}}\n'), 2, 2],
   ];
   if (kind === "rust") {
     const text = "x".repeat(70000);
@@ -114,8 +123,15 @@ try {
   }
   if (failures) throw new Error(`${failures} correctness case(s) disagreed with the installed Pi loader`);
 
-  const workload = suppliedSession || await largeFixture();
-  console.log(suppliedSession ? "Workload: supplied session file (read only)" : "Workload: 40,000 messages, 40,960,000 text bytes (synthetic)");
+  let workload;
+  if (suppliedSession) {
+    workload = join(directory, "supplied-snapshot.jsonl");
+    copyFileSync(suppliedSession, workload);
+    ownedFiles.push(workload);
+  } else {
+    workload = await largeFixture();
+  }
+  console.log(suppliedSession ? "Workload: snapshot of supplied session file (source untouched)" : "Workload: 40,000 messages, 40,960,000 text bytes (synthetic)");
   const samples = { node: [], [kind]: [] };
   for (let round = 0; round < 5; round++) {
     const order = round % 2 ? [kind, "node"] : ["node", kind];
@@ -136,7 +152,7 @@ try {
   }
   const factor = median(samples.node.map((entry) => entry.aggregateKiB)) / median(samples[kind].map((entry) => entry.aggregateKiB));
   console.log(`Memory ratio: ${factor.toFixed(2)}× (installed JavaScript loader / Node host plus ${kind} worker)`);
-  console.log(`Module-level 8× threshold: ${factor >= 8 ? "MET" : "NOT MET"}`);
+  console.log("Native results stay in the worker; the Node host holds only a summary. This is not a functional loader replacement.");
   console.log("All outputs agreed; 0 failed cases; build time excluded. Aggregate RSS counts shared pages in each process. This does not measure an entire Pi session or prove its 8× goal.");
 } finally {
   for (const path of ownedFiles) unlinkSync(path);

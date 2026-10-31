@@ -26,7 +26,12 @@ if (kind === "node") {
     worker.once("error", reject);
   });
   const output = await new Promise((resolve, reject) => {
-    worker.stdout.once("data", (chunk) => resolve(String(chunk).trim()));
+    let pending = "";
+    worker.stdout.on("data", (chunk) => {
+      pending += String(chunk);
+      if (pending.includes("\n")) resolve(pending.split("\n", 1)[0]);
+      else if (pending.length > 4096) reject(new Error("Native ready output is too large"));
+    });
     stopped.then((code) => reject(new Error(`${kind} exited ${code} before ready`)), reject);
   });
   console.log(`${output} ${worker.pid}`);

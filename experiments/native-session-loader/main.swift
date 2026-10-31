@@ -10,6 +10,9 @@ var pending = Data()
 func retain(_ data: Data) {
     guard let line = String(data: data, encoding: .utf8), !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
     guard let entry = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) else { return }
+    if entry is NSNull { return }
+    if let value = entry as? NSNumber, value.doubleValue == 0 { return }
+    if let value = entry as? String, value.isEmpty { return }
     if let object = entry as? [String: Any],
        let message = object["message"] as? [String: Any],
        let content = message["content"] as? [[String: Any]],
