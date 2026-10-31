@@ -40,6 +40,7 @@ export async function tempRoot(fixtures: readonly string[] = []): Promise<string
 	const root = await mkdtemp(join(tmpdir(), "chord-plugins-"));
 	made.push(root);
 	for (const name of fixtures) await cp(join(FIXTURES, name), join(root, name), { recursive: true });
+	await outlastReplayedFileEvents();
 	return root;
 }
 
@@ -66,6 +67,7 @@ export async function writePlugin(
 ): Promise<string> {
 	const path = join(root, dir);
 	await writeFiles(path, { "package.json": JSON.stringify({ name, type: "module", ...manifest }), ...files });
+	await outlastReplayedFileEvents();
 	return path;
 }
 
