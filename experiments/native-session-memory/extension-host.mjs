@@ -5,10 +5,19 @@ import inspectEntry from "./extension.ts";
 const [binary, fixture, id] = process.argv.slice(2);
 if (!binary || !fixture || !id) throw new Error("Expected native binary, session file, and entry ID");
 const worker = spawn(binary, [fixture, "serve"], { stdio: ["pipe", "pipe", "inherit"] });
-const exited = new Promise((resolve) => worker.once("exit", (code, signal) => resolve({ code, signal })));
+const exited = new Promise((resolve) => {
+  worker.once("error", () => resolve({ isLaunchFailure: true }));
+  worker.once("exit", (code, signal) => resolve({ code, signal, isLaunchFailure: false }));
+});
 const lines = createInterface({ input: worker.stdout })[Symbol.asyncIterator]();
 try {
-  const ready = await lines.next();
+  const ready = await Promise.race([
+    lines.next(),
+    exited.then(({ isLaunchFailure }) => {
+      if (isLaunchFailure) throw new Error("Native session server could not start");
+      return { done: true };
+    }),
+  ]);
   if (!ready.value?.startsWith("READY ")) throw new Error("Native session server did not start");
   worker.stdin.write(`${JSON.stringify({ id })}\n`);
   const reply = await lines.next();
@@ -18,7 +27,8 @@ try {
   const result = inspectEntry(entry);
   console.log(`EXTENSION_OK ${result}`);
 } finally {
-  worker.stdin.end();
-  const { code, signal } = await exited;
+  if (worker.pid && !worker.stdin.destroyed) worker.stdin.end();
+  const { code, signal, isLaunchFailure } = await exited;
+  if (isLaunchFailure) throw new Error("Native session server could not start");
   if (code !== 0 || signal) throw new Error(`Native session server exited ${signal ?? code}`);
 }
