@@ -15,7 +15,7 @@ for (let round = 0; round < 5; round++) {
     const exited = new Promise((resolve) => child.once("exit", resolve));
     let stdout = "";
     child.stdout.on("data", (chunk) => { stdout += chunk; });
-    while (!stdout.includes("\n") && child.exitCode === null) await new Promise((resolve) => setTimeout(resolve, 20));
+    while (!stdout.includes("\n") && child.exitCode === null && child.signalCode === null) await new Promise((resolve) => setTimeout(resolve, 20));
     const [ready, count, bytes, worker] = stdout.trim().split(" ");
     if (ready !== "READY" || !Number.isInteger(Number(count)) || !Number.isInteger(Number(bytes))) throw new Error(`${kind} failed to load session`);
     const value = `${count} ${bytes}`;

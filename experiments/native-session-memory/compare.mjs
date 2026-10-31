@@ -28,7 +28,7 @@ for (let round = 0; round < 5; round++) {
     let stderr = "";
     child.stdout.on("data", (chunk) => { stdout += chunk; });
     child.stderr.on("data", (chunk) => { stderr += chunk; });
-    while (!stdout.includes("\n") && child.exitCode === null) await new Promise((resolve) => setTimeout(resolve, 20));
+    while (!stdout.includes("\n") && child.exitCode === null && child.signalCode === null) await new Promise((resolve) => setTimeout(resolve, 20));
     const expected = `READY ${rows} ${rows * payload.length}`;
     const [actual, workerPid] = [stdout.trim().split(" ").slice(0, 3).join(" "), Number(stdout.trim().split(" ")[3])];
     if (actual !== expected || !Number.isInteger(workerPid)) throw new Error(`${kind} output ${stdout.trim()} != ${expected}; ${stderr}`);
