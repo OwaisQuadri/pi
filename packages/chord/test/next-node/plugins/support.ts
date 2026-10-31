@@ -32,6 +32,10 @@ export async function tempRoot(fixtures: readonly string[] = []): Promise<string
 	return root;
 }
 
+export function outlastReplayedFileEvents(): Promise<void> {
+	return new Promise((done) => setTimeout(done, 200));
+}
+
 /** Writes `files` (relative path to text) into `dir`, creating directories. */
 export async function writeFiles(dir: string, files: Readonly<Record<string, string>>): Promise<void> {
 	for (const [path, text] of Object.entries(files)) {

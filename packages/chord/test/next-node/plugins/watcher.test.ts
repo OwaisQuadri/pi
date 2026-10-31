@@ -11,7 +11,7 @@ import { Batch } from "../../../src/next/state/internal.ts";
 import { type BuiltFacet, discoverPlugins } from "../../../src/next-node/plugins/index.ts";
 import { PluginWatcher } from "../../../src/next-node/plugins/watcher.ts";
 import { changesOf, delivered } from "../../next/support.ts";
-import { KINDS, tempRoot, writeFiles, writePlugin } from "./support.ts";
+import { KINDS, outlastReplayedFileEvents, tempRoot, writeFiles, writePlugin } from "./support.ts";
 
 /** A root with plugins `a` (worker), `b` (server) and the contracts fixture, a base directory, and a watcher of both. */
 async function watched() {
@@ -20,6 +20,7 @@ async function watched() {
 	await writePlugin(root, "a", "@test/a", { "worker.ts": "", "own.ts": "" });
 	await writePlugin(root, "b", "@test/b", { "server.ts": "" });
 	const failures: unknown[] = [];
+	await outlastReplayedFileEvents();
 	const watcher = new PluginWatcher(
 		{ roots: [root], base: [base], kinds: KINDS, failed: (error) => failures.push(error) },
 		new Batch(() => {}, undefined),
