@@ -1,0 +1,2 @@
+{"type":"message","id":"1","parentId":null,"message":{"role":"user","content":[{"type":"text","text":"hello"}]}}
+{"type":"message","id":"2","parentId":"1","message":{"role":"assistant","content":[{"type":"text","text":"world"}]}}
