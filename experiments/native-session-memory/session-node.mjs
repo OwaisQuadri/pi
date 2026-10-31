@@ -20,7 +20,8 @@ if (kind === "node") {
   worker = spawn(binary, [fixture, kind.slice(5)], { stdio: ["ignore", "pipe", "inherit"] });
   exited = new Promise((resolve) => worker.once("exit", resolve));
   const output = await new Promise((resolve, reject) => {
-    worker.stdout.once("data", (chunk) => resolve(String(chunk).trim()));
+    const lines = createInterface({ input: worker.stdout });
+    lines.once("line", (line) => { lines.close(); resolve(line); });
     worker.once("error", reject);
     worker.once("exit", (code) => reject(new Error(`Rust worker exited ${code} before ready`)));
   });

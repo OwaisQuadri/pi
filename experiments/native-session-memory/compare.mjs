@@ -6,6 +6,8 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const directory = dirname(fileURLToPath(import.meta.url));
+const binary = process.argv[2];
+if (!binary) throw new Error("Pass the release Rust binary path");
 const fixture = join(tmpdir(), `pi-native-session-memory-${process.pid}.jsonl`);
 const output = createWriteStream(fixture);
 const rows = 40000;
@@ -17,8 +19,6 @@ for (let index = 0; index < rows; index++) {
 output.end();
 await once(output, "finish");
 
-const binary = process.argv[2];
-if (!binary) throw new Error("Pass the release Rust binary path");
 const results = { node: [], "rust-generic": [], "rust-typed": [] };
 for (let round = 0; round < 5; round++) {
   for (const kind of round % 2 ? ["rust-typed", "rust-generic", "node"] : ["node", "rust-generic", "rust-typed"]) {
