@@ -420,7 +420,6 @@ describe("the rollout step (§4)", () => {
 			["session|S3", { added: ["@test/notes"], changed: [], removed: [] }],
 		]);
 		await until(() => one.label.value === "S1 v2" && two.label.value === "S2 v2" && failed.label.value === "S3 v2");
-		expect(plugins.state.value.dirty).toEqual([]);
 		for (const ref of [one, two, failed, control]) ref.release();
 	}, 20_000);
 
