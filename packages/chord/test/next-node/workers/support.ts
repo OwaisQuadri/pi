@@ -14,6 +14,7 @@ import * as chordNext from "../../../src/next/index.ts";
 import { createPlugins, type Plugins } from "../../../src/next-node/plugins/index.ts";
 import { createWorkers, type Workers, type WorkersError } from "../../../src/next-node/workers/index.ts";
 import { Session, type WorkerBehaviour } from "../fixtures/workers/control.ts";
+import { outlastReplayedFileEvents } from "../plugins/support.ts";
 
 /** The server's own kind. */
 export const Server = hostKind("server");
@@ -76,6 +77,7 @@ export async function fleet(
 ): Promise<Fleet> {
 	const root = await mkdtemp(join(tmpdir(), "chord-workers-"));
 	await cp(PLUGINS, root, { recursive: true });
+	await outlastReplayedFileEvents();
 	const errors: WorkersError[] = [];
 	const hostErrors: HostError[] = [];
 	const starts: string[] = [];
