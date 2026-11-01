@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
 
 const [kind, binary, modulePath, suppliedSession] = process.argv.slice(2);
-if (!["rust", "swift", "zig"].includes(kind)) throw new Error("Expected rust, swift, or zig");
+if (!["rust", "swift", "zig", "scriptc"].includes(kind)) throw new Error("Expected rust, swift, zig, or scriptc");
 const root = dirname(fileURLToPath(import.meta.url));
 const directory = mkdtempSync(join(tmpdir(), "pi-session-loader-suite-"));
 const ownedFiles = [];
@@ -110,7 +110,7 @@ try {
     const padding = (32766 - ((header.length + prefix.length) % 32768) + 32768) % 32768;
     const text = "x".repeat(padding) + "🌙";
     cases.push(["Swift multibyte character across a read boundary", fixture("swift-boundary.jsonl", `${header}${prefix}${text}` + '"}]}}\n'), 2, padding + 4]);
-  } else {
+  } else if (kind === "zig") {
     cases.push(["Zig CRLF session lines", fixture("zig-crlf.jsonl", '{"type":"session","id":"fixture"}\r\n{"type":"message","message":{"content":[{"type":"text","text":"a"}]}}\r\n{"type":"message","message":{"content":[{"type":"text","text":"é"}]}}\r\n'), 3, 3]);
   }
   let failures = 0;
