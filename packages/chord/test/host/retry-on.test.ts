@@ -190,9 +190,10 @@ describe("retryOn", () => {
 		const refs = await (async () => {
 			const user = host.hold(User, { id: 1 }, context);
 			await flushed();
+			const refs = objects.filter((ref) => ref.deref()?.label === "app.user(1)");
 			user.release();
 			await flushed();
-			return objects.filter((ref) => ref.deref()?.label === "app.user(1)");
+			return refs;
 		})();
 		expect(refs.length).toBeGreaterThan(0);
 		await expectCollected(...refs);
