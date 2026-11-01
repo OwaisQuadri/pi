@@ -81,10 +81,11 @@ value="${NODE_EXTRA_CA_CERTS-}"
 # The pi-env tests build their daemon with cargo, whose toolchains live under the real home.
 test_env+=("RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" "CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}")
 
-for name in CI GITHUB_ACTIONS VITEST_MAX_WORKERS; do
+for name in CI GITHUB_ACTIONS; do
 	value="${!name-}"
 	[[ -z "$value" ]] || test_env+=("$name=$value")
 done
+test_env+=("VITEST_MAX_WORKERS=${VITEST_MAX_WORKERS:-2}")
 
 echo "Running tests without API keys in isolated home: $test_root/home"
 env -i "${test_env[@]}" npm test
