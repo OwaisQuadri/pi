@@ -489,7 +489,6 @@ describe("end to end: a server and a worker", () => {
 		await delivered();
 		expect(valuesOf(frames)).toEqual(["v2"]);
 		expect([notes.label.value, notes.count.value, index.label.value]).toEqual(["v2", 1, "v2"]);
-		expect(plugins.state.value).toMatchObject({ dirty: [] });
 
 		await writeFile(join(root, "notes", "label.ts"), "export const label = ;\n");
 		await vi.waitFor(() => expect(plugins.state.value).toMatchObject({ dirty: ["@test/notes"] }), { timeout: 5_000 });

@@ -211,23 +211,28 @@ describe("DefaultPackageManager git update", () => {
 				if (event.type === "progress" && event.message) progressMessages.push(event.message);
 			});
 			const markerPath = join(agentDir, "git", "github.com", "test", ".extension.pi-update-incomplete");
+			const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+			Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+			try {
+				await packageManager.update();
 
-			await packageManager.update();
+				expect(getCurrentCommit(installedDir)).toBe(newCommit);
+				expect(executedCommands).toContain("git clean -fdx");
+				expect(executedCommands.some((command) => command.startsWith("npm install"))).toBe(true);
+				expect(progressMessages.some((message) => message.includes("Could not remove all untracked files"))).toBe(
+					true,
+				);
+				expect(existsSync(markerPath)).toBe(true);
 
-			expect(getCurrentCommit(installedDir)).toBe(newCommit);
-			expect(executedCommands).toContain("git clean -fdx");
-			expect(executedCommands.some((command) => command.startsWith("npm install"))).toBe(true);
-			expect(progressMessages.some((message) => message.includes("Could not remove all untracked files"))).toBe(
-				true,
-			);
-			expect(existsSync(markerPath)).toBe(true);
+				failClean = false;
+				executedCommands.length = 0;
+				await packageManager.update();
 
-			failClean = false;
-			executedCommands.length = 0;
-			await packageManager.update();
-
-			expect(executedCommands).toContain("git clean -fdx");
-			expect(existsSync(markerPath)).toBe(false);
+				expect(executedCommands).toContain("git clean -fdx");
+				expect(existsSync(markerPath)).toBe(false);
+			} finally {
+				if (platformDescriptor) Object.defineProperty(process, "platform", platformDescriptor);
+			}
 		});
 	});
 

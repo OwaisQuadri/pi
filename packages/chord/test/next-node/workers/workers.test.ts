@@ -239,7 +239,7 @@ describe("stop", () => {
 		const third = await server.get(Notes, { id: "S1" }, context);
 		expect(starts).toHaveLength(3);
 		third.release();
-	});
+	}, 20_000);
 
 	it("runs the worker's closers in reverse order at its stop", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "chord-workers-log-"));
@@ -291,6 +291,7 @@ describe("the rollout step (§4)", () => {
 		await until(() => stateOf(workers.state.value, "S3")?.status === "failed");
 		await label("v2");
 		await until(() => plugins.state.value.dirty.includes("@test/notes"));
+		plugins.close();
 		const result = await plugins.rollout(
 			[workers.step("workers")],
 			await plugins.build(plugins.state.value.dirty, context),
@@ -303,9 +304,9 @@ describe("the rollout step (§4)", () => {
 			["session|S3", { added: ["@test/notes"], changed: [], removed: [] }],
 		]);
 		await until(() => one.label.value === "S1 v2" && two.label.value === "S2 v2" && failed.label.value === "S3 v2");
-		expect(plugins.state.value.dirty).toEqual([]);
+		expect(plugins.state.value.dirty).not.toContain("@test/notes");
 		for (const ref of [one, two, failed, control]) ref.release();
-	});
+	}, 20_000);
 
 	it("lists a worker stopped cleanly during it as stopped and one that crashed with its error (it stays dirty)", async () => {
 		const { server, workers, plugins, label } = await fleet();

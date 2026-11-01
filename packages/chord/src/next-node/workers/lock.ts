@@ -78,14 +78,16 @@ export async function lockAt(lock: LockAddress, context: Context): Promise<Proce
 function listened(server: Server, address: string): Promise<boolean> {
 	return new Promise<boolean>((resolve, reject) => {
 		const failed = (error: NodeJS.ErrnoException): void => {
+			server.removeListener("listening", listening);
 			if (error.code === "EADDRINUSE") resolve(false);
 			else reject(error);
 		};
-		server.once("error", failed);
-		server.listen(address, () => {
+		const listening = (): void => {
 			server.removeListener("error", failed);
 			resolve(true);
-		});
+		};
+		server.once("error", failed);
+		server.listen(address, listening);
 	});
 }
 
@@ -115,7 +117,12 @@ function waitWhileHeld(address: string, context: Context): Promise<boolean> {
 			connected = true;
 		});
 		socket.on("error", (error: NodeJS.ErrnoException) => {
-			if (!connected && error.code === "ECONNREFUSED") settle(false);
+			if (connected) return;
+			if (error.code === "ECONNREFUSED" || error.code === "ENOTSOCK") settle(false);
+			else if (error.code !== "ENOENT") {
+				signal?.removeEventListener("abort", abort);
+				reject(error);
+			}
 		});
 		socket.once("close", () => settle(true));
 	});

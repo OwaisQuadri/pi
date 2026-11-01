@@ -140,10 +140,9 @@ export class Upgrades {
 		for (const upgraded of this.#open) end(upgraded);
 	}
 
-	/** Keeps `upgraded` until its socket closes; an error (an oversized frame) terminates only that socket. */
 	#keep(upgraded: Upgraded): void {
 		const { socket } = upgraded;
-		socket.on("error", () => socket.terminate());
+		socket.on("error", () => {});
 		this.#open.add(upgraded);
 		socket.once("close", () => this.#open.delete(upgraded));
 	}
