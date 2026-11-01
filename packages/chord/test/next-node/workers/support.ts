@@ -1,7 +1,7 @@
 // Test support for the workers component (slice 10 §3, §4): a server routing `Session` to forked fixture workers, the
 // fixture plugins copied into a temporary root, each address's start data (its behaviour) chosen by the test.
 
-import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -74,9 +74,11 @@ export async function fleet(
 		readonly authorize?: () => boolean;
 	} = {},
 ): Promise<Fleet> {
-	const root = await mkdtemp(join(tmpdir(), "chord-workers-"));
-	await cp(PLUGINS, root, { recursive: true });
-	await new Promise<void>((resolve) => setTimeout(resolve, 200));
+	const parent = await mkdtemp(join(tmpdir(), "chord-workers-"));
+	const staged = join(parent, "staged");
+	const root = join(parent, "plugins");
+	await cp(PLUGINS, staged, { recursive: true });
+	await rename(staged, root);
 	const errors: WorkersError[] = [];
 	const hostErrors: HostError[] = [];
 	const starts: string[] = [];
@@ -125,7 +127,7 @@ export async function fleet(
 		await server.close(context);
 		plugins.close();
 	};
-	made.push({ root, close });
+	made.push({ root: parent, close });
 	return {
 		server,
 		workers,
