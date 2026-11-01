@@ -191,40 +191,40 @@ describe("DefaultPackageManager git update", () => {
 
 	describe("git clean failures", () => {
 		// https://github.com/earendil-works/pi/issues/11597
-		it.skipIf(process.platform !== "win32")(
-			"should install dependencies and retry the clean later when git clean fails",
-			async () => {
-				setupRemoteAndInstall();
-				const newCommit = createCommit(
-					remoteDir,
-					"package.json",
-					JSON.stringify({ name: "test-extension", version: "1.0.0" }),
-					"Add package.json",
-				);
+		it("should install dependencies and retry the clean later when git clean fails", async () => {
+			setupRemoteAndInstall();
+			const newCommit = createCommit(
+				remoteDir,
+				"package.json",
+				JSON.stringify({ name: "test-extension", version: "1.0.0" }),
+				"Add package.json",
+			);
 
-				const executedCommands: string[] = [];
-				let failClean = true;
-				const managerWithInternals = packageManager as unknown as {
-					runCommand: (command: string, args: string[], options?: { cwd?: string }) => Promise<void>;
-				};
-				managerWithInternals.runCommand = async (command, args, options) => {
-					const commandLine = `${command} ${args.join(" ")}`;
-					executedCommands.push(commandLine);
-					if (command === "npm") return;
-					if (commandLine === "git clean -fdx" && failClean) {
-						throw new Error("git clean -fdx failed with code 1");
-					}
-					const result = spawnSync(command, args, { cwd: options?.cwd, encoding: "utf-8" });
-					if (result.status !== 0) {
-						throw new Error(`Command failed: ${commandLine}\n${result.stderr}`);
-					}
-				};
-				const progressMessages: string[] = [];
-				packageManager.setProgressCallback((event) => {
-					if (event.type === "progress" && event.message) progressMessages.push(event.message);
-				});
-				const markerPath = join(agentDir, "git", "github.com", "test", ".extension.pi-update-incomplete");
-
+			const executedCommands: string[] = [];
+			let failClean = true;
+			const managerWithInternals = packageManager as unknown as {
+				runCommand: (command: string, args: string[], options?: { cwd?: string }) => Promise<void>;
+			};
+			managerWithInternals.runCommand = async (command, args, options) => {
+				const commandLine = `${command} ${args.join(" ")}`;
+				executedCommands.push(commandLine);
+				if (command === "npm") return;
+				if (commandLine === "git clean -fdx" && failClean) {
+					throw new Error("git clean -fdx failed with code 1");
+				}
+				const result = spawnSync(command, args, { cwd: options?.cwd, encoding: "utf-8" });
+				if (result.status !== 0) {
+					throw new Error(`Command failed: ${commandLine}\n${result.stderr}`);
+				}
+			};
+			const progressMessages: string[] = [];
+			packageManager.setProgressCallback((event) => {
+				if (event.type === "progress" && event.message) progressMessages.push(event.message);
+			});
+			const markerPath = join(agentDir, "git", "github.com", "test", ".extension.pi-update-incomplete");
+			const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+			Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+			try {
 				await packageManager.update();
 
 				expect(getCurrentCommit(installedDir)).toBe(newCommit);
@@ -241,8 +241,10 @@ describe("DefaultPackageManager git update", () => {
 
 				expect(executedCommands).toContain("git clean -fdx");
 				expect(existsSync(markerPath)).toBe(false);
-			},
-		);
+			} finally {
+				if (platformDescriptor) Object.defineProperty(process, "platform", platformDescriptor);
+			}
+		});
 	});
 
 	describe("force-push scenarios", () => {
