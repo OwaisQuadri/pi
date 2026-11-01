@@ -14,7 +14,6 @@ import type { JsonValue } from "../../../src/json.ts";
 import { createPlugins, type Plugins } from "../../../src/node/plugins/index.ts";
 import { createWorkers, type Workers, type WorkersError } from "../../../src/node/workers/index.ts";
 import { Session, type WorkerBehaviour } from "../fixtures/workers/control.ts";
-import { outlastReplayedFileEvents } from "../plugins/support.ts";
 
 /** The server's own kind. */
 export const Server = hostKind("server");
@@ -80,7 +79,7 @@ export async function fleet(
 	const root = join(parent, "plugins");
 	await cp(PLUGINS, staged, { recursive: true });
 	await rename(staged, root);
-	await outlastReplayedFileEvents();
+	await new Promise<void>((resolve) => setTimeout(resolve, 200));
 	const errors: WorkersError[] = [];
 	const hostErrors: HostError[] = [];
 	const starts: string[] = [];
