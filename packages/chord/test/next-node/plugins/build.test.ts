@@ -3,7 +3,7 @@
 
 import { createHash } from "node:crypto";
 import { readFile, realpath } from "node:fs/promises";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 import { BACKGROUND_CONTEXT as context } from "../../../src/context/index.ts";
 import {
@@ -264,7 +264,8 @@ describe("building a facet: the import table", () => {
 			buildFacet(plugins.find((each) => each.name === name)!, "worker", { ...NODE, plugins }, context);
 		const user = await build("@test/user");
 		if (user.kind === "failed") throw new Error(user.errors.join("\n"));
-		expect(user.copied.map((file) => file.slice(second.length + 1)).sort()).toEqual([
+		const canonicalSecond = await realpath(second);
+		expect(user.copied.map((file) => relative(canonicalSecond, file)).sort()).toEqual([
 			"elsewhere/contract.ts",
 			"elsewhere/other.ts",
 		]);
