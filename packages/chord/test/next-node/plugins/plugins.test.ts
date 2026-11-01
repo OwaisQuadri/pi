@@ -27,7 +27,15 @@ import {
 	transported,
 	valuesOf,
 } from "../../next/support.ts";
-import { HOST_PACKAGES, kindsOf, outlastReplayedFileEvents, tempRoot, writeFiles, writePackage, writePlugin } from "./support.ts";
+import {
+	HOST_PACKAGES,
+	kindsOf,
+	outlastReplayedFileEvents,
+	tempRoot,
+	writeFiles,
+	writePackage,
+	writePlugin,
+} from "./support.ts";
 
 /** The fixtures' contracts, as the `contracts` fixture declares them. */
 const Worker = hostKind("test.worker");
@@ -268,7 +276,7 @@ describe("rollout", () => {
 		const root = await tempRoot();
 		await itemPlugin(root, "a", "a1");
 		await itemPlugin(root, "b", "b1");
-		const { plugins } = component(root);
+		const { plugins } = await component(root);
 		await plugins.build([], context);
 		await writeFile(join(root, "a", "worker.ts"), "// a\n");
 		await vi.waitFor(() => expect(plugins.state.value).toMatchObject({ dirty: ["@test/a"] }), { timeout: 5_000 });
@@ -298,7 +306,7 @@ describe("rollout", () => {
 	it("keeps dirty a plugin whose built kind no step shipped", async () => {
 		const root = await tempRoot();
 		await writePlugin(root, "a", "@test/a", { "worker.ts": "export default { setup: () => {} };", "server.ts": "" });
-		const { plugins } = component(root);
+		const { plugins } = await component(root);
 		await plugins.build([], context);
 		await writeFile(join(root, "a", "worker.ts"), "export default { setup: () => {} }; // edited\n");
 		await vi.waitFor(() => expect(plugins.state.value).toMatchObject({ dirty: ["@test/a"] }), { timeout: 5_000 });
@@ -350,7 +358,7 @@ describe("current sets (slice 10 D11)", () => {
 		const root = await tempRoot();
 		await itemPlugin(root, "a", "a1");
 		await writePlugin(root, "b", "@test/b", { "server.ts": "export default { setup: () => {} };" });
-		const { plugins } = component(root);
+		const { plugins } = await component(root);
 		const digests = async () =>
 			(await plugins.scripts("worker", context)).map(({ plugin, built }) => [
 				plugin.name,
