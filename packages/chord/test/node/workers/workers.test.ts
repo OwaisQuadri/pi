@@ -428,6 +428,7 @@ describe("the rollout step (§4)", () => {
 		await until(() => stateOf(workers.state.value, "S3")?.status === "failed");
 		await label("v2");
 		await until(() => plugins.state.value.dirty.includes("@test/notes"));
+		plugins.close();
 		const result = await plugins.rollout(
 			[workers.step("workers")],
 			await plugins.build(plugins.state.value.dirty, context),
@@ -440,6 +441,7 @@ describe("the rollout step (§4)", () => {
 			["session|S3", { added: ["@test/notes"], changed: [], removed: [] }],
 		]);
 		await until(() => one.label.value === "S1 v2" && two.label.value === "S2 v2" && failed.label.value === "S3 v2");
+		expect(plugins.state.value.dirty).not.toContain("@test/notes");
 		for (const ref of [one, two, failed, control]) ref.release();
 	}, 20_000);
 
