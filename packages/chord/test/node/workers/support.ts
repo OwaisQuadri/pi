@@ -79,7 +79,7 @@ export async function fleet(
 	const root = join(parent, "plugins");
 	await cp(PLUGINS, staged, { recursive: true });
 	await rename(staged, root);
-	await new Promise<void>((resolve) => setTimeout(resolve, 200));
+
 	const errors: WorkersError[] = [];
 	const hostErrors: HostError[] = [];
 	const starts: string[] = [];

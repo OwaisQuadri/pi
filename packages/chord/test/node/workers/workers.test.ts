@@ -57,10 +57,10 @@ describe("starts on demand", () => {
 
 describe("failures stay until retry or a rollout (R2)", () => {
 	it("a start that throws fails the address: holders fail waiting with it, a new hold forks nothing; retry starts it", async () => {
-		let fail = true;
+		let isFailing = true;
 		const { server, workers, errors, starts } = await fleet({
 			start: async () => {
-				if (fail) throw new Error("no data dir");
+				if (isFailing) throw new Error("no data dir");
 				return {};
 			},
 		});
@@ -81,7 +81,7 @@ describe("failures stay until retry or a rollout (R2)", () => {
 		expect(errors).toMatchObject([
 			{ kind: "worker_failed", address: "session|S1", error: { message: "no data dir" } },
 		]);
-		fail = false;
+		isFailing = false;
 		await workers.retry(Session({ id: "S1" }), context);
 		await until(() => notes.state.value.kind === "live" && again.state.value.kind === "live");
 		expect(stateOf(workers.state.value, "S1")?.status).not.toBe("failed");
@@ -293,11 +293,11 @@ describe("stop", () => {
 
 describe("close", () => {
 	it("cancels a start waiting in start(address): nothing forks; new starts reject; no worker_failed at shutdown", async () => {
-		let waiting = false;
+		let isWaiting = false;
 		const { server, workers, errors } = await fleet({
 			start: async (address, startContext) => {
 				if (address.key === "session|wait") {
-					waiting = true;
+					isWaiting = true;
 					await new Promise((_, reject) =>
 						startContext.abortSignal?.addEventListener("abort", () => reject(startContext.abortSignal?.reason)),
 					);
@@ -307,7 +307,7 @@ describe("close", () => {
 		});
 		const running = await server.get(Notes, { id: "S1" }, context);
 		const waits = server.hold(Notes, { id: "wait" }, context);
-		await until(() => waiting);
+		await until(() => isWaiting);
 		await workers.close(context);
 		expect(workers.state.value).toEqual({});
 		expect(errors).toEqual([]);
@@ -522,13 +522,13 @@ describe("fix round 1", () => {
 	});
 
 	it("close during an app's start that ignores its signal returns at once; nothing forks after it (Sol)", async () => {
-		let forked = false;
+		let isForked = false;
 		const { server, workers, errors } = await fleet({ start: () => new Promise<never>(() => {}) });
 		const notes = server.hold(Notes, { id: "S1" }, context);
 		await new Promise((resolve) => setTimeout(resolve, 50));
 		await workers.close(context);
-		forked = stateOf(workers.state.value, "S1") !== undefined;
-		expect([forked, errors]).toEqual([false, []]);
+		isForked = stateOf(workers.state.value, "S1") !== undefined;
+		expect([isForked, errors]).toEqual([false, []]);
 		notes.release();
 	});
 
