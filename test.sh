@@ -78,8 +78,7 @@ done
 value="${NODE_EXTRA_CA_CERTS-}"
 [[ -z "$value" ]] || test_env+=("NODE_EXTRA_CA_CERTS=$value")
 
-# Preserve CI detection only for runner behavior and test reporting.
-for name in CI GITHUB_ACTIONS; do
+for name in CI GITHUB_ACTIONS VITEST_MAX_WORKERS; do
 	value="${!name-}"
 	[[ -z "$value" ]] || test_env+=("$name=$value")
 done
