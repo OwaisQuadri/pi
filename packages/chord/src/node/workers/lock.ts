@@ -161,6 +161,7 @@ function waitWhileHeld(address: string, context: Context): Promise<boolean> {
 		});
 		socket.on("error", (error: NodeJS.ErrnoException) => {
 			if (isConnected) return;
+
 			if (NOBODY_ACCEPTS.has(error.code ?? "")) settle(false);
 			else if (error.code !== "ENOENT") {
 				signal?.removeEventListener("abort", abort);
