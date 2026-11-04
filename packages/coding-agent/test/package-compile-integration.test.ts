@@ -168,6 +168,25 @@ writeFileSync(${JSON.stringify(join(root, "finished"))}, "finished");\n`,
 		expect(existsSync(join(target, "scratch"))).toBe(false);
 	});
 
+	it("does not leave Git maintenance running in a disposable update stage", async () => {
+		await manager.install(source);
+		advance("new");
+		git(target, "config", "gc.auto", "1");
+		const tracePath = join(root, "git-trace.jsonl");
+		const previousTrace = process.env.GIT_TRACE2_EVENT;
+		try {
+			process.env.GIT_TRACE2_EVENT = tracePath;
+			await manager.update(source);
+		} finally {
+			if (previousTrace === undefined) delete process.env.GIT_TRACE2_EVENT;
+			else process.env.GIT_TRACE2_EVENT = previousTrace;
+		}
+		const trace = readFileSync(tracePath, "utf8");
+		expect(trace).toContain('"name":"fetch"');
+		expect(trace).not.toMatch(/"event":"child_start".*"argv":\["git","(?:maintenance|gc)".*"--auto"/);
+		expect(execFileSync(join(target, "bin/tool"), { encoding: "utf8" })).toBe("new");
+	});
+
 	it.each(["dependencies", "compile", "timeout"])(
 		"preserves old tool, dependencies and stamp after %s failure and retries",
 		async (failure) => {
