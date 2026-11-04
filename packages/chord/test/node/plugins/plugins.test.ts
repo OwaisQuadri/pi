@@ -514,6 +514,7 @@ describe("plugins whose files move, and removed plugins (slice 12 fix round 2, S
 		const Hello = local("test.hello", { version: 1, params: {}, members: { label: str() } });
 		expect((await host.get(Hello, {}, context)).label.value).toBe("from a file");
 		await writePlugin(root, "hello", "hello", { "worker.ts": facet("from a directory") });
+		await vi.waitFor(() => expect(plugins.state.value).toMatchObject({ set: true }), { timeout: 5_000 });
 		const built = await plugins.build([], context);
 		expect(Object.keys(built.plugins)).toEqual(["hello"]);
 		await plugins.rollout([plugins.step("worker", host)], built, context);
