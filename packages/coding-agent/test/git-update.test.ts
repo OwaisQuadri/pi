@@ -153,7 +153,7 @@ describe("DefaultPackageManager git update", () => {
 			await packageManager.update();
 
 			expect(executedCommands).toContain(
-				"git fetch --prune --no-tags origin +refs/heads/main:refs/remotes/origin/main",
+				"git fetch --no-auto-maintenance --prune --no-tags origin +refs/heads/main:refs/remotes/origin/main",
 			);
 			expect(executedCommands).not.toContain("git fetch --prune origin");
 			expect(executedCommands).not.toContain("git reset --hard @{upstream}");
@@ -335,7 +335,7 @@ describe("DefaultPackageManager git update", () => {
 			await packageManager.resolveExtensionSources([gitSource], { temporary: true });
 
 			expect(executedCommands).toContain(
-				"git fetch --prune --no-tags origin +refs/heads/main:refs/remotes/origin/main",
+				"git fetch --no-auto-maintenance --prune --no-tags origin +refs/heads/main:refs/remotes/origin/main",
 			);
 			expect(getCurrentCommit(cachedDir)).toBe(newCommit);
 			expect(getFileContent(cachedDir, "pi-extensions/session-breakdown.ts")).toBe("// fresh");
