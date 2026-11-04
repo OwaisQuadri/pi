@@ -2153,7 +2153,11 @@ export class DefaultPackageManager implements PackageManager {
 						const target = source.ref
 							? { ref: "FETCH_HEAD", fetchArgs: ["fetch", "origin", source.ref] }
 							: await this.getLocalGitUpdateTarget(stage, run);
-						await this.runCommand("git", target.fetchArgs, options);
+						await this.runCommand(
+							"git",
+							["fetch", "--no-auto-maintenance", ...target.fetchArgs.slice(1)],
+							options,
+						);
 						const targetHead = await this.runCommandCapture("git", ["rev-parse", `${target.ref}^{commit}`], {
 							cwd: stage,
 						});
