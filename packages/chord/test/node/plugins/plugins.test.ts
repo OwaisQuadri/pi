@@ -508,7 +508,7 @@ describe("plugins whose files move, and removed plugins (slice 12 fix round 2, S
 				`export default defineFacet((host) => host.serve(Item, () => ({ label: constant(${JSON.stringify(label)}) })));`,
 			].join("\n");
 		await writeFiles(root, { "hello.worker.ts": facet("from a file") });
-		const { plugins } = component(root);
+		const { plugins } = await component(root);
 		const host = createHost({ onError: () => {} });
 		await plugins.load(host, { kind: "worker", core: [], modules: HOST_PACKAGES }, context);
 		const Hello = local("test.hello", { version: 1, params: {}, members: { label: str() } });
@@ -528,7 +528,7 @@ describe("plugins whose files move, and removed plugins (slice 12 fix round 2, S
 		await writePlugin(root, "user", "@test/user", {
 			"worker.ts": 'import { c } from "../contracts/contract.ts";\nexport default { setup: () => c };',
 		});
-		const { plugins } = component(root);
+		const { plugins } = await component(root);
 		await plugins.build(["@test/user"], context);
 		await rm(join(root, "user"), { recursive: true });
 		await vi.waitFor(() => expect(plugins.state.value).toMatchObject({ set: true }), { timeout: 5_000 });
