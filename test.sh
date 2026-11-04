@@ -4,6 +4,7 @@ set -euo pipefail
 # Isolate user resources, credentials, temporary files, and tool configuration.
 temp_parent="${TMPDIR:-/tmp}"
 temp_parent="${temp_parent%/}"
+temp_parent="$(cd "$temp_parent" && pwd -P)"
 test_root="$(mktemp -d "$temp_parent/pi-test.XXXXXX")"
 git_askpass="$(type -P false)"
 readonly temp_parent test_root git_askpass
