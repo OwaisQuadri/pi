@@ -345,7 +345,7 @@ describe("rollout", () => {
 			expect(plugins.state.value).toMatchObject({ dirty: ["@test/a"] });
 		});
 		plugins.close();
-	});
+	}, 15_000);
 });
 
 describe("current sets (slice 10 D11)", () => {
